@@ -99,7 +99,7 @@ Installed games are playable immediately after install. The Steam restart is sti
 ## Known Limitations
 
 - Unifideck replaces Steam's default **All Games**, **Installed**, and **Great on Deck** tabs, so some sort and filter behavior is not preserved.
-- With **TabMaster** installed, Unifideck skips custom tab injection and relies on `[Unifideck]` collections instead.
+- With **[TabMaster](https://github.com/Tormak9970/TabMaster)** installed, Unifideck skips custom tab injection and relies on `[Unifideck]` collections instead.
 - Steam still needs a restart after sync or cleanup so new shortcuts and artwork fully apply.
 - Xbox Cloud Gaming support is **streaming-only** and depends on **Microsoft Edge**.
 - Cloud saves currently cover **Epic** and **GOG** only, and game-level support varies.
