@@ -29,7 +29,7 @@ def test_resolve_by_exact_ext_id_not_first_mount(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(mounts, "scan_mounts", lambda *a, **k: [first, second])
     monkeypatch.setattr(mounts, "ensure_games_subdir", lambda mp, uid, gid: f"{mp}/Games")
 
-    result = download_mod._resolve_storage_path(mounts.mount_id(second.mount_point), None)
+    result = download_mod._resolve_storage_path(mounts.mount_id(second), None)
 
     assert result == f"{second.mount_point}/Games"
 
@@ -49,6 +49,36 @@ def test_resolve_collided_ext_id_picks_correct_device(
 
     result = download_mod._resolve_storage_path(second_id, None)
     assert result == f"{second.mount_point}/Games"
+
+
+def test_resolve_accepts_a_name_based_id_saved_before_uuid_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A queued install must not lose the drive the user picked.
+
+    Its ``storage_type`` was written under the old name-derived scheme;
+    without the fallback it matches no current id and the install
+    silently lands on internal storage instead.
+    """
+    drive = _mount("/run/media/deck/External SSD", uuid="b430ddca")
+    monkeypatch.setattr(mounts, "scan_mounts", lambda *a, **k: [drive])
+    monkeypatch.setattr(mounts, "ensure_games_subdir", lambda mp, uid, gid: f"{mp}/Games")
+
+    assert mounts.mount_id(drive) == "ext:b430ddca"
+    result = download_mod._resolve_storage_path("ext:External_SSD", None)
+
+    assert result == "/run/media/deck/External SSD/Games"
+
+
+def test_resolve_unknown_ext_id_still_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The legacy fallback must not turn "unplugged" into a wrong drive."""
+    drive = _mount("/run/media/deck/External SSD", uuid="b430ddca")
+    monkeypatch.setattr(mounts, "scan_mounts", lambda *a, **k: [drive])
+    monkeypatch.setattr(mounts, "ensure_games_subdir", lambda mp, uid, gid: f"{mp}/Games")
+
+    assert download_mod._resolve_storage_path("ext:SomeOtherDrive", None) is None
 
 
 def test_resolve_legacy_sdcard_picks_first_mount(monkeypatch: pytest.MonkeyPatch) -> None:

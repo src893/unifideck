@@ -38,6 +38,11 @@ def _install_client(prefix: Path) -> None:
     client.mkdir(parents=True, exist_ok=True)
     (client / paths.CLIENT_EXE).write_bytes(b"MZ")
     (client / paths.LAUNCHER_EXE).write_bytes(b"MZ")
+    # The versioned payload the shim loads. Without it the prefix is
+    # the shape an interrupted install leaves and no client can start.
+    build = client / "Battle.net.17651"
+    build.mkdir(exist_ok=True)
+    (build / paths.CLIENT_DLL).write_bytes(b"MZ")
 
 
 def _make_auth(root: Path) -> Path:

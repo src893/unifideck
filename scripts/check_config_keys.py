@@ -30,6 +30,17 @@ What it does NOT check
   ``assert_all_keys_resolve`` at boot.
 * Presence in the JSON Schema — that's covered by
   ``ConfigValidator.validate_config`` at boot.
+* **Guarded reads.** A key that cannot silently yield ``None`` is
+  outside the regime described above and is skipped: one that
+  passes its own default (``config.get("k", 5)``, ``_cfg(c, "k", 5)``)
+  and one that is a non-final operand of an ``or`` chain, where a
+  later operand supplies the fallback. Requiring those to be
+  registered would mean inventing a ``defaults/config.json`` entry
+  whose only job is to duplicate the literal beside the read.
+* Lines marked ``config-key-ignore``. The owner is matched by *name*,
+  so a local dict parsed from a vendor's own JSON file that happens
+  to be called ``config`` collides with the plugin config; the marker
+  opts that read out with a reason.
 
 Usage
 -----
@@ -42,9 +53,8 @@ from __future__ import annotations
 
 import ast
 import pathlib
-import re
 import sys
-from typing import Iterable
+from collections.abc import Iterable
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 PY_ROOT = REPO_ROOT / "py_modules" / "unifideck"
@@ -64,23 +74,61 @@ _GET_PATTERNS = (
 )
 
 
+IGNORE_MARKER = "config-key-ignore"
+
+
+def _has_fallback(node: ast.Call, key_arg_index: int) -> bool:
+    """True if the call supplies its own default for a missing key.
+
+    Only a read with **no** fallback belongs in ``RUNTIME_REQUIRED_KEYS``.
+    That is the whole premise in this module's header: a call site drops its
+    hardcoded default and relies on ``defaults/config.json`` + schema + the
+    boot-time assert, and this script closes the gap where the key was never
+    registered so the read silently returns ``None``.
+
+    A call that still passes a default is by construction not in that regime
+    — it is an optional override with a documented in-code fallback, and
+    forcing it into the registry would require inventing a
+    ``defaults/config.json`` entry whose only effect is to duplicate the
+    literal already sitting next to the read.
+    """
+    return len(node.args) > key_arg_index + 1 or any(
+        kw.arg == "default" for kw in node.keywords
+    )
+
+
 class _ConfigKeyVisitor(ast.NodeVisitor):
-    """Collect literal-string keys from config-reader calls.
+    """Collect literal-string keys from *unguarded* config-reader calls.
 
     Matches three shapes:
 
         config.get("...")
         <something>.config.get("...")       — e.g. ``self._config.get``
         _cfg(config, "...")                  — module-local helper
+
+    and skips a read that cannot silently yield ``None``: one carrying its
+    own default argument, and one that is a non-final operand of an ``or``
+    chain (``config.get("cloud.root") or config.get("legacy") or "~/x"``),
+    where a later operand supplies the fallback.
     """
 
     def __init__(self, path: pathlib.Path) -> None:
         self.path = path
         self.keys: list[tuple[str, int]] = []  # (key, line)
+        self._guarded: set[int] = set()  # id() of Call nodes inside an `or`
 
-    def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+    def visit_BoolOp(self, node: ast.BoolOp) -> None:
+        # Every operand but the last has a fallback behind it.
+        if isinstance(node.op, ast.Or):
+            for value in node.values[:-1]:
+                for child in ast.walk(value):
+                    if isinstance(child, ast.Call):
+                        self._guarded.add(id(child))
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
         key = self._extract_key(node)
-        if key is not None:
+        if key is not None and id(node) not in self._guarded:
             self.keys.append((key, node.lineno))
         self.generic_visit(node)
 
@@ -95,7 +143,7 @@ class _ConfigKeyVisitor(ast.NodeVisitor):
             if owner_name and "config" in owner_name.lower():
                 if node.args and isinstance(node.args[0], ast.Constant):
                     val = node.args[0].value
-                    if isinstance(val, str):
+                    if isinstance(val, str) and not _has_fallback(node, 0):
                         return val
         # Pattern: _cfg(config, "...", ...)
         if isinstance(func, ast.Name) and func.id == "_cfg":
@@ -103,6 +151,7 @@ class _ConfigKeyVisitor(ast.NodeVisitor):
                 len(node.args) >= 2
                 and isinstance(node.args[1], ast.Constant)
                 and isinstance(node.args[1].value, str)
+                and not _has_fallback(node, 1)
             ):
                 return node.args[1].value
         return None
@@ -136,7 +185,13 @@ def collect_call_site_keys() -> dict[str, list[tuple[pathlib.Path, int]]]:
             continue
         visitor = _ConfigKeyVisitor(p)
         visitor.visit(tree)
+        lines = p.read_text(encoding="utf-8").splitlines()
         for key, line in visitor.keys:
+            # ``config`` is matched by name, so a local dict parsed from some
+            # vendor's own JSON collides with the plugin config. An explicit
+            # marker on the line opts that read out.
+            if IGNORE_MARKER in lines[line - 1]:
+                continue
             sites.setdefault(key, []).append((p, line))
     return sites
 

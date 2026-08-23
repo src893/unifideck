@@ -82,10 +82,44 @@ def launcher_path_for(plugin_dir: str | None) -> str:
 
 
 def _entry_matches(entry: Any, spec: AuthShortcutSpec) -> bool:
+    """True when *entry*'s launch id is this store's auth shortcut.
+
+    Identity only — deliberately no ownership check, because the one
+    caller that merely *reads* (:func:`find_in_vdf`) must not miss a
+    row: a false negative there makes ``ensure_auth_shortcut`` add a
+    second auth tile rather than reuse the existing one. Callers that
+    go on to *write* pair this with :func:`_is_repairable`.
+
+    Tightened from the original ``spec.store_game_id in options``
+    substring test to a canonical ``store:id`` compare, so a row that
+    merely contains the token no longer matches. The compare stays on
+    the canonical head only, never the whole string —
+    :func:`repair_launch_options` exists precisely to fix rows whose
+    tail has drifted, and matching the tail would make it unable to
+    find its own repair targets.
+    """
+    from unifideck.services.shortcut.launch_options import get_full_id
+
     if not isinstance(entry, dict):
         return False
     options = str(entry.get("LaunchOptions") or "")
-    return spec.store_game_id in options
+    return get_full_id(options) == spec.store_game_id
+
+
+def _is_repairable(entry: dict[str, Any], launcher_path: str) -> bool:
+    """True when it is safe to rewrite *entry*'s fields.
+
+    Ours by the ``Exe`` gate, or a row with no ``Exe`` at all. The
+    second case is the one this repair exists for — a bare row launches
+    nothing, so it cannot be a working shortcut of the user's, and
+    giving it our launcher is what makes it functional again.
+    """
+    from unifideck.services.shortcut.write_guard import is_ours
+
+    if is_ours(entry, launcher_path):
+        return True
+    exe = entry.get("Exe") or entry.get("exe") or ""
+    return not (exe.strip().strip('"') if isinstance(exe, str) else exe)
 
 
 def find_in_vdf(shortcuts: dict[str, Any], spec: AuthShortcutSpec) -> int | None:
@@ -115,6 +149,14 @@ def repair_launch_options(
     repaired = False
     for entry in shortcuts.values():
         if not _entry_matches(entry, spec):
+            continue
+        # The rewrite below is what needs ownership, not the lookup.
+        if not _is_repairable(entry, launcher_path):
+            logger.warning(
+                "[%s] a shortcut carries our auth id but is not ours "
+                "(Exe=%r) — leaving it alone",
+                spec.store, entry.get("Exe"),
+            )
             continue
         if str(entry.get("LaunchOptions") or "") == expected:
             continue

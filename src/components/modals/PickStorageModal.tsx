@@ -101,6 +101,15 @@ export const PickStorageModal: FC<Props> = ({
   const { t } = useTranslation();
 
   const available = locations.filter((l) => l.available);
+  /* Externals are every row that isn't internal storage or the custom
+     path. When the list arrived and holds none, say so — a drive the
+     backend failed to detect used to render as nothing at all, leaving
+     the user staring at a picker that silently offered only internal
+     storage. An empty list means the RPC failed, a different problem
+     that this note must not claim to explain. */
+  const noExternal =
+    available.length > 0 &&
+    !available.some((l) => l.id !== "internal" && l.id !== "custom");
   const [selectedId, setSelectedId] =
     useState<StorageLocation>(defaultLocation);
   const [customPathPicked, setCustomPathPicked] = useState<string | null>(null);
@@ -180,6 +189,12 @@ export const PickStorageModal: FC<Props> = ({
             />
           );
         })}
+
+        {noExternal && (
+          <div style={{ fontSize: 12, color: "#8f98a0", padding: "0 12px" }}>
+            {t("storageSettings.noExternalDrives")}
+          </div>
+        )}
 
         {/* Confirmed custom path (collapsed) — clicking reopens picker */}
         {customPathPicked && !pickExpanded && (

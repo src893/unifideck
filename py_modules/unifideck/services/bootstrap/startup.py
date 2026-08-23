@@ -129,11 +129,18 @@ async def _self_heal_auth_shortcuts(shortcut_svc: Any) -> None:
         if not isinstance(shortcuts_dict, dict):
             return
 
+        from unifideck.services.shortcut.write_guard import is_ours
+
+        launcher = getattr(shortcut_svc, "_launcher_path", "") or ""
         stale_auth_tags = {"auth-gog", "auth-epic", "auth-amazon", "auth-microsoft"}
         keys_to_delete: list[str] = []
 
         for key, entry in shortcuts_dict.items():
-            if not isinstance(entry, dict):
+            # Every auth shortcut we ever wrote targets our launcher, so
+            # the Exe gate loses nothing here — while a tag-value match
+            # alone would delete any shortcut of the user's that happens
+            # to carry one of these four strings, on every single boot.
+            if not isinstance(entry, dict) or not is_ours(entry, launcher):
                 continue
             tags = entry.get("tags", {})
             if not isinstance(tags, dict):

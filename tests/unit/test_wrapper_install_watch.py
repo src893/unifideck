@@ -186,7 +186,11 @@ def test_a_zero_size_never_counts_as_stable(
 
     _run(probe)
 
-    assert probe.complete_calls == mod.STABILITY_MAX_POLLS
+    # The full download budget, not three polls: zero never satisfies the
+    # stability rule, so the wait runs to its ceiling. That ceiling now comes
+    # from the probe's own timeout rather than a fixed count, so it is asked
+    # for here the same way the watcher derives it.
+    assert probe.complete_calls == mod._Watch(probe, "/pfx", None)._completion_polls
 
 
 # ── the give-up watchdogs ───────────────────────────────────────
@@ -291,3 +295,150 @@ def test_cancel_propagates_and_the_loop_closes_nothing(
         asyncio.run(_cancel_soon())
 
     assert killed == []
+
+
+# ── an explained wait ───────────────────────────────────────────
+
+
+class _ExplainingProbe(_Probe):
+    """A probe that can say why nothing is moving. Optional on the protocol."""
+
+    def __init__(self, message: str | None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.message = message
+        self.explained = 0
+
+    def status_message(self) -> str | None:
+        self.explained += 1
+        return self.message
+
+
+def _messages(probe: Any) -> list[str]:
+    seen: list[str] = []
+
+    async def _progress(payload: dict[str, Any]) -> None:
+        seen.append(payload["phase_message"])
+
+    _run(probe, progress=_progress)
+    return seen
+
+
+def test_a_store_that_can_explain_the_wait_replaces_the_generic_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"Waiting for the game to install" and a real hang look identical.
+
+    Battle.net can tell them apart: its Agent runs one exclusive operation at
+    a time and logs which one holds the slot, so a 28-minute wait behind the
+    Agent's own self-update gets named instead of mimed.
+    """
+    _alive(monkeypatch, True)
+    note = "Battle.net is updating its downloader (75%). Don't cancel."
+
+    seen = _messages(_ExplainingProbe(note, detect_after=10, complete_after=1))
+
+    assert note in seen
+    assert not any("Waiting for the game to install" in m for m in seen)
+
+
+def test_the_explanation_also_beats_a_stalled_byte_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A vendor client makes the install directory when it *accepts* the job.
+
+    So a game queued behind the client's own update sits at a few KB for as
+    long as that takes, and "Installing… (0.0 GB)" is a worse answer than
+    naming what is in front of it.
+    """
+    _alive(monkeypatch, True)
+    note = "Battle.net is updating its downloader (12%). Don't cancel."
+
+    seen = _messages(
+        _ExplainingProbe(note, detect_after=1, complete_after=4, sizes=[24_576]),
+    )
+
+    assert note in seen
+    assert not any("Installing…" in m for m in seen)
+
+
+def test_a_probe_with_nothing_to_say_keeps_the_generic_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _alive(monkeypatch, True)
+
+    seen = _messages(_ExplainingProbe(None, detect_after=10, complete_after=1))
+
+    assert any("Waiting for the game to install" in m for m in seen)
+
+
+def test_a_probe_without_the_method_at_all_is_unaffected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ubisoft's probe does not implement it, and must not have to."""
+    _alive(monkeypatch, True)
+    probe = _Probe(detect_after=10, complete_after=1)
+    assert not hasattr(probe, "status_message")
+
+    assert any(
+        "Waiting for the game to install" in m for m in _messages(probe)
+    )
+
+
+def test_a_raising_status_message_never_ends_an_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A progress *message* must not be able to fail the thing it describes."""
+    _alive(monkeypatch, True)
+
+    class _Exploding(_Probe):
+        def status_message(self) -> str | None:
+            raise RuntimeError("log unreadable")
+
+    probe = _Exploding(detect_after=2, complete_after=2)
+
+    assert _run(probe) == "/install/dir"
+
+
+# ── the download budget ─────────────────────────────────────────
+
+
+def test_the_download_wait_follows_the_probes_own_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A store cannot declare four hours and silently be given ninety minutes.
+
+    The budget was a fixed 360 polls. At Battle.net's 15 second interval that
+    is 90 minutes, against the 4 hours its probe declares. The clock starts
+    when ``detect()`` first sees the install directory, and a vendor client
+    creates that when it *accepts* the job, so a long queue wait plus a large
+    download ran past the fixed budget and a healthy install was reported as
+    failed.
+    """
+    _alive(monkeypatch, True)
+    probe = _Probe()
+    probe.poll_interval_s = 15.0
+    probe.timeout_s = 4 * 60 * 60
+
+    watch = mod._Watch(probe, "/pfx", None)
+
+    assert watch._completion_polls == 960
+
+
+def test_a_short_timeout_never_shrinks_the_download_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deriving the budget must not take headroom away from anyone.
+
+    Ubisoft's probe declares no timeout, so it inherits the two-hour default
+    at a 10 second poll. That is 720 polls, already above the old floor; a
+    store with a genuinely short timeout keeps the floor rather than losing
+    download time it had before.
+    """
+    _alive(monkeypatch, True)
+    probe = _Probe()
+    probe.poll_interval_s = 10.0
+    probe.timeout_s = 60.0
+
+    watch = mod._Watch(probe, "/pfx", None)
+
+    assert watch._completion_polls == mod.STABILITY_MAX_POLLS

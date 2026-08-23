@@ -15,6 +15,7 @@ other sync mixins use.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -68,6 +69,28 @@ class _SyncCacheMixin:
             )
         except Exception as e:
             logger.warning("[SyncService] Failed to load library cache: %s", e)
+
+    def reset_library_state(self) -> None:
+        """Drop the in-memory library and its on-disk cache.
+
+        The exact inverse of :meth:`_load_library_cache`, and the reason
+        it exists: "Delete all Unifideck data" removes
+        ``library_cache.json`` from disk in *both* modes, but the process
+        keeps serving ``_all_games`` — so the Downloads tab kept listing
+        games whose files had just been deleted, and the next
+        :meth:`_save_library_cache` (fired by any finalize or
+        install-state flip) wrote the wiped library straight back.
+
+        Memory is cleared *before* the file so a concurrent save can only
+        ever persist the empty state, never resurrect the old one.
+        Unlinking here as well as in the data-dir sweep keeps the method
+        correct on its own, whatever order callers use.
+        """
+        self._all_games = {}
+        self._last_sync_time = None
+        with contextlib.suppress(OSError):
+            self._get_library_cache_path().unlink(missing_ok=True)
+        logger.info("[SyncService] library state reset (in-memory + cache file)")
 
     def _save_library_cache(self) -> None:
         """Save current unified library state to disk cache."""

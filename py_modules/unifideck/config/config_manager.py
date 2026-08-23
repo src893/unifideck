@@ -34,7 +34,13 @@ logger = logging.getLogger(__name__)
 _FALLBACK: dict[str, Any] = {
     "data_dir": "~/.local/share/unifideck",
     "ui": {
-        "language": "en-US",
+        # ``locale``, matching defaults/config.json — NOT ``language``,
+        # which nothing declares and nothing writes. That stray key made
+        # every locale lookup return "en-US": ``get_unifideck_locale``
+        # reads it as an explicit user preference, and a fallback value
+        # is indistinguishable from a real choice, so resolution never
+        # reached the Steam language or the POSIX locale below it.
+        "locale": "auto",
     },
     "sync": {
         "interval_seconds": 300,

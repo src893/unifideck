@@ -93,6 +93,11 @@ def _install_client(prefix: Path) -> None:
     client.mkdir(parents=True, exist_ok=True)
     (client / bpaths.CLIENT_EXE).write_bytes(b"MZ")
     (client / bpaths.LAUNCHER_EXE).write_bytes(b"MZ")
+    # The versioned payload the shim loads. Without it the prefix is
+    # the shape an interrupted install leaves and no client can start.
+    build = client / "Battle.net.17651"
+    build.mkdir(exist_ok=True)
+    (build / bpaths.CLIENT_DLL).write_bytes(b"MZ")
 
 
 def _mark(prefix: Path) -> None:
@@ -394,3 +399,44 @@ def test_a_relocated_install_captures_from_the_old_disk_first(
 
     assert auth_vault.read_bytes() == b"rotated-on-internal"
     assert not old.is_dir()
+
+
+# --------------------------------------------------------------------------
+# an incomplete client is named as such, not as "you are not signed in"
+# --------------------------------------------------------------------------
+
+
+def test_an_incomplete_client_is_not_reported_as_signed_out(
+    store: BattlenetStore, tmp_path: Path,
+) -> None:
+    """The tester's state: signed in fine, client half-installed.
+
+    Both reach the same gate. "Sign in first" to a user who signed in an
+    hour ago reads as a bug in the sign-in, which is how one report came
+    back a second time — the fix is the same action, but only if the
+    message says which thing is broken.
+    """
+    payload = bpaths.client_payload_dir(store.prefixes.auth_prefix)
+    for leftover in payload.iterdir():
+        leftover.unlink()
+    payload.rmdir()
+
+    result = _place(store, str(tmp_path / "sd" / "Games"))
+
+    assert result.success is False
+    assert result.error_code == "client_incomplete"
+    assert "reinstalls the client" in result.error
+
+
+def test_a_genuinely_absent_client_still_says_sign_in(
+    store: BattlenetStore, tmp_path: Path,
+) -> None:
+    """The other half of the same gate keeps its original words."""
+    import shutil
+
+    shutil.rmtree(bpaths.client_dir(store.prefixes.auth_prefix))
+
+    result = _place(store, str(tmp_path / "sd" / "Games"))
+
+    assert result.success is False
+    assert result.error_code == "not_signed_in"

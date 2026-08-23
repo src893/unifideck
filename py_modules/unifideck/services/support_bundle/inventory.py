@@ -54,9 +54,19 @@ _UPC_PROBES = (
 # missing means the user never completed sign-in, so the library is empty
 # for a reason that is not a bug; and the warmed marker missing on
 # ``.template`` is exactly why an install refuses to clone.
+# A glob probe can match many directories; enough to see the self-update
+# pair (a new build lands beside the old one) without listing a tree.
+_GLOB_MATCH_CAP = 8
+
 _BNET_PROBES = (
     "pfx/drive_c/Program Files (x86)/Battle.net/Battle.net.exe",
     "pfx/drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe",
+    # The client payload. ``Battle.net.exe`` above is a ~1 MB shim written
+    # early in the install; this DLL is the client it loads, and an
+    # interrupted install leaves the first without the second. That prefix
+    # passes as "has a client" to the naked eye and cannot start one.
+    # A DLL, not an exe — the versioned dir holds no ``Battle.net.exe``.
+    "pfx/drive_c/Program Files (x86)/Battle.net/Battle.net.*/battle.net.dll",
     "pfx/drive_c/ProgramData/Battle.net/Agent/product.db",
     "pfx/drive_c/ProgramData/Battle.net/Agent/data/cache",
     "pfx/drive_c/users/steamuser/AppData/Roaming/Battle.net/Battle.net.config",
@@ -239,15 +249,42 @@ def _render_wrapper_prefixes(
 
 
 def _upc_rows(prefix: Path, probes: tuple[str, ...] = _UPC_PROBES) -> list[str]:
-    """One existence row per known vendor path inside ``prefix``."""
+    """One existence row per known vendor path inside ``prefix``.
+
+    A probe containing ``*`` is expanded, because some of what matters is
+    named after a version. Battle.net's client payload lives in
+    ``Battle.net.<build>/`` and its *absence* is the whole diagnosis for an
+    interrupted client install — a bundle that could not report it cost a
+    field investigation the one fact that would have ended it in a line.
+    """
     rows: list[str] = []
     for relative in probes:
-        target = prefix / relative
-        try:
-            info = target.stat()
-        except OSError:
-            rows.append(f"absent   {relative}")
-            continue
-        size = "dir" if target.is_dir() else f"{info.st_size} bytes"
-        rows.append(f"EXISTS   {relative}  ({size})")
+        rows.extend(
+            _glob_rows(prefix, relative) if "*" in relative
+            else [_stat_row(prefix / relative, relative)],
+        )
     return rows
+
+
+def _stat_row(target: Path, label: str) -> str:
+    """``EXISTS``/``absent`` for one concrete path."""
+    try:
+        info = target.stat()
+    except OSError:
+        return f"absent   {label}"
+    size = "dir" if target.is_dir() else f"{info.st_size} bytes"
+    return f"EXISTS   {label}  ({size})"
+
+
+def _glob_rows(prefix: Path, pattern: str) -> list[str]:
+    """One row per match, or a single ``absent`` row when nothing matches."""
+    try:
+        matches = sorted(prefix.glob(pattern))
+    except OSError as err:
+        return [f"absent   {pattern}  <unreadable: {err.strerror}>"]
+    if not matches:
+        return [f"absent   {pattern}  (no matches)"]
+    return [
+        _stat_row(match, str(match.relative_to(prefix)))
+        for match in matches[:_GLOB_MATCH_CAP]
+    ]

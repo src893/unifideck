@@ -24,7 +24,8 @@ from typing import Any
 
 import pytest
 
-from unifideck.core import safe_delete
+from unifideck.core import marker_sweep, safe_delete
+from unifideck.rpc.mixins import cleanup_sweeps
 from unifideck.rpc.mixins.sync import SyncRPCMixin
 
 
@@ -256,7 +257,9 @@ async def test_wipe_config_auth_deletes_gog_creds_keeps_user_config(
     assert not (cfg / "gog_credentials.json").exists()
     assert not (cfg / "gogdl_auth.json").exists()
     assert not (cfg / "gogdl").exists()
-    # User prefs + Heroic's own gogdl are preserved.
+    # User prefs preserved. ``heroic_gogdl`` is ours (gogdl names it, we set
+    # GOGDL_CONFIG_PATH) but only its ``manifests/`` are pruned, and by
+    # ``sweep_gogdl_manifests`` — not here.
     assert (cfg / "config.json").exists()
     assert (cfg / "heroic_gogdl").exists()
 
@@ -286,3 +289,199 @@ async def test_delete_install_dir_refuses_home(
     m = _mixin()
     assert await m._delete_install_dir(str(home)) is False
     assert home.exists()
+
+
+# --------------------------------------------------------------------------
+# sweep_gogdl_manifests — GOG's only install-side record
+# --------------------------------------------------------------------------
+def _gogdl_manifests(home: Path, *game_ids: str) -> Path:
+    d = home / ".config/unifideck/heroic_gogdl/manifests"
+    d.mkdir(parents=True)
+    for gid in game_ids:
+        (d / gid).write_text("{}")
+    return d
+
+
+def test_sweep_gogdl_manifests_clears_our_manifest_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    home = _fake_home(monkeypatch, tmp_path)
+    d = _gogdl_manifests(home, "1434021265", "1207658755")
+    # A sibling gogdl cache that is NOT a manifest must survive.
+    support = home / ".config/unifideck/heroic_gogdl/gog-support"
+    support.mkdir(parents=True)
+    (support / "keep").write_text("x")
+
+    assert cleanup_sweeps.sweep_gogdl_manifests() == 2
+
+    assert list(d.iterdir()) == []
+    assert d.is_dir()          # the dir itself stays, gogdl reuses it
+    assert (support / "keep").exists()
+
+
+def test_sweep_gogdl_manifests_never_touches_heroics_own_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """``~/.config/heroic`` is a different app's data — never in scope.
+
+    Only ``~/.config/unifideck/heroic_gogdl`` is ours (gogdl picks the
+    directory name; we point ``GOGDL_CONFIG_PATH`` at its parent).
+    """
+    home = _fake_home(monkeypatch, tmp_path)
+    _gogdl_manifests(home, "1434021265")
+    heroic = home / ".config/heroic/heroic_gogdl/manifests"
+    heroic.mkdir(parents=True)
+    (heroic / "1434021265").write_text("{}")
+
+    assert cleanup_sweeps.sweep_gogdl_manifests() == 1
+    assert (heroic / "1434021265").exists()
+
+
+def test_sweep_gogdl_manifests_noop_when_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _fake_home(monkeypatch, tmp_path)
+    assert cleanup_sweeps.sweep_gogdl_manifests() == 0
+
+
+# --------------------------------------------------------------------------
+# sweep_cache_backups — the clear's own .bak snapshots
+# --------------------------------------------------------------------------
+def test_sweep_cache_backups_removes_bak_and_keeps_live_caches(
+    tmp_path: Path,
+) -> None:
+    """Clearing a namespace snapshots its old contents to ``.bak``.
+
+    So a wipe left the pre-wipe caches sitting next to the emptied files —
+    and ``CacheStore._load`` restores from ``.bak`` when the live file fails
+    to parse, which would bring the whole wiped cache back.
+    """
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "metadata_cache.json").write_text("{}")
+    (cache / "metadata_cache.json.bak").write_text('{"stale": 1}')
+    (cache / "compat_cache.json.bak").write_text('{"stale": 1}')
+    (cache / "notes.txt").write_text("keep me")
+
+    assert cleanup_sweeps.sweep_cache_backups(str(cache)) == 2
+
+    assert (cache / "metadata_cache.json").exists()
+    assert not (cache / "metadata_cache.json.bak").exists()
+    assert not (cache / "compat_cache.json.bak").exists()
+    assert (cache / "notes.txt").exists()
+
+
+def test_sweep_cache_backups_tolerates_missing_dir(tmp_path: Path) -> None:
+    assert cleanup_sweeps.sweep_cache_backups(str(tmp_path / "nope")) == 0
+
+
+# --------------------------------------------------------------------------
+# sweep_stale_install_records — dangling CLI rows, post-sweep
+# --------------------------------------------------------------------------
+def _cli_records(home: Path, *, legendary: Any, nile: Any) -> None:
+    (home / ".config/legendary").mkdir(parents=True, exist_ok=True)
+    (home / ".config/legendary/installed.json").write_text(
+        json.dumps(legendary),
+    )
+    (home / ".config/nile").mkdir(parents=True, exist_ok=True)
+    (home / ".config/nile/installed.json").write_text(json.dumps(nile))
+
+
+def test_sweep_stale_install_records_drops_only_dangling_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A row whose dir survives is never touched — safe in both modes."""
+    home = _fake_home(monkeypatch, tmp_path)
+    live_epic = home / "Games/Frostpunk"
+    live_epic.mkdir(parents=True)
+    live_amazon = home / "Games/Grime"
+    live_amazon.mkdir(parents=True)
+    _cli_records(
+        home,
+        legendary={
+            "b2e0": {"install_path": str(live_epic)},
+            "5ab7": {"install_path": str(home / "Games/WeirdWest")},  # gone
+        },
+        nile=[
+            {"id": "amzn1.live", "path": str(live_amazon)},
+            {"id": "amzn1.gone", "path": str(home / "Games/BangBang")},
+        ],
+    )
+
+    assert cleanup_sweeps.sweep_stale_install_records(False) == 2
+
+    legendary = json.loads(
+        (home / ".config/legendary/installed.json").read_text(),
+    )
+    nile = json.loads((home / ".config/nile/installed.json").read_text())
+    assert set(legendary) == {"b2e0"}
+    assert [e["id"] for e in nile] == ["amzn1.live"]
+
+
+def test_sweep_stale_install_records_drops_nile_manifest_with_the_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """nile's manifest cache is what actually vetoes a re-install."""
+    home = _fake_home(monkeypatch, tmp_path)
+    manifests = home / ".config/nile/manifests"
+    manifests.mkdir(parents=True)
+    (manifests / "amzn1.gone.raw").write_text("x")
+    _cli_records(
+        home,
+        legendary={},
+        nile=[{"id": "amzn1.gone", "path": str(home / "Games/BangBang")}],
+    )
+
+    assert cleanup_sweeps.sweep_stale_install_records(False) >= 1
+    assert not (manifests / "amzn1.gone.raw").exists()
+
+
+def test_sweep_stale_install_records_gates_gog_manifests_on_destructive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Non-destructive keeps the games, so the manifest is still accurate.
+
+    Dropping it there would turn the next update into a full re-download
+    instead of a delta.
+    """
+    home = _fake_home(monkeypatch, tmp_path)
+    d = _gogdl_manifests(home, "1434021265")
+    _cli_records(home, legendary={}, nile=[])
+
+    assert cleanup_sweeps.sweep_stale_install_records(False) == 0
+    assert (d / "1434021265").exists()
+
+    assert cleanup_sweeps.sweep_stale_install_records(True) == 1
+    assert not (d / "1434021265").exists()
+
+
+def test_pruning_must_run_after_the_marker_sweep(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Ordering regression: the records ARE the sweep's root index.
+
+    ``collect_install_roots`` derives its roots from the very
+    ``installed.json`` rows the prune removes, so pruning first would blind
+    ``sweep_all`` to every install dir.
+    """
+    home = _fake_home(monkeypatch, tmp_path)
+    game = home / "Games/WeirdWest"
+    game.mkdir(parents=True)
+    (game / ".unifideck_manifest.json").write_text(
+        json.dumps({"store": "epic", "store_id": "5ab7"}),
+    )
+    _cli_records(
+        home,
+        legendary={"5ab7": {"install_path": str(game)}},
+        nile=[],
+    )
+
+    roots = marker_sweep.collect_install_roots()
+    assert roots  # the record gave us the root
+
+    assert marker_sweep.sweep_all(roots) == 1
+    assert not game.exists()
+
+    # Only now is the row dangling — and now it can be pruned.
+    assert cleanup_sweeps.sweep_stale_install_records(False) == 1
+    assert marker_sweep.collect_install_roots() == set()

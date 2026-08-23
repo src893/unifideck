@@ -288,3 +288,47 @@ def shortcuts_race_block(shortcuts_path: str | None) -> dict[str, Any]:
         "written_after_steam_start": stale,
         "siblings": _glob_states(Path(shortcuts_path).parent, "shortcuts.vdf.*"),
     }
+
+
+def shortcuts_census_block(
+    shortcuts_path: str | None, data_dir: str | None, launcher_path: str | None,
+) -> dict[str, Any]:
+    """Split shortcuts.vdf into ours vs the user's, and count backups.
+
+    The one measurement that separates "this user has no non-Steam games"
+    from "ours are all that survived" — the question every report of
+    vanished shortcuts turns on, and the one a bundle could not answer.
+    Parses the file directly rather than reading the service's cache,
+    since the bundle is collected out-of-band from any sync.
+    """
+    if not shortcuts_path:
+        return {"resolved": False}
+
+    from unifideck.services.shortcut.vdf_backup import backup_dir
+    from unifideck.services.shortcut.vdf_read import VdfStatus, read_vdf_sync
+    from unifideck.services.shortcut.write_guard import census
+
+    result = read_vdf_sync(shortcuts_path)
+    if result.status is VdfStatus.UNREADABLE:
+        return {
+            "resolved": True, "readable": False, "reason": result.reason,
+            "raw_entry_count": result.raw_count,
+        }
+
+    counts = census(
+        result.data.get("shortcuts", {}) or {}, launcher_path or "",
+    )
+    backups = (
+        _glob_states(backup_dir(data_dir), "shortcuts.vdf.bak.*")
+        if data_dir else []
+    )
+    return {
+        "resolved": True,
+        "readable": True,
+        "total": counts.total,
+        "ours": counts.ours,
+        "foreign": counts.foreign,
+        "backup_count": len(backups),
+        "backup_newest": backups[0].get("modified") if backups else None,
+        "backups": backups,
+    }

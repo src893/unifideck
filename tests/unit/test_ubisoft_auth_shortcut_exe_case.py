@@ -60,18 +60,21 @@ def test_prune_orphan_ignores_entry_with_real_exe() -> None:
 
     removed = _prune_orphan_shortcuts(shortcuts)
 
-    assert removed == 0
+    assert removed == []
     assert "0" in shortcuts
 
 
 def test_prune_orphan_removes_truly_bare_entry() -> None:
     shortcuts: dict[str, Any] = {
-        "0": {"AppName": "upc.exe", "Exe": "", "LaunchOptions": ""},
+        "0": {"AppName": "upc.exe", "Exe": "", "LaunchOptions": "", "appid": 77},
     }
 
     removed = _prune_orphan_shortcuts(shortcuts)
 
-    assert removed == 1
+    # The appid is returned, not just a count: a bare row has no Exe, so
+    # the write guard reads it as the user's and would block the delete
+    # unless the caller declares it. See ``_dropped_appids``.
+    assert removed == [77]
     assert "0" not in shortcuts
 
 

@@ -46,7 +46,7 @@ import os
 import shutil
 from pathlib import Path
 
-from unifideck.launcher import wine_registry, wrapper_prefs
+from unifideck.launcher import wine_registry, wrapper_locale, wrapper_prefs
 from unifideck.launcher.wrapper_session_specs import (
     GAMES_DIR_NAME,
     SPECS,
@@ -99,15 +99,20 @@ def prefix_index_path() -> Path:
     return Path(base) / "unifideck" / "wrapper_prefixes.json"
 
 
-def write_prefix_index(
-    store: str, *, auth: Path, template: Path, locale: str | None = None,
-) -> None:
+def write_prefix_index(store: str, *, auth: Path, template: Path) -> None:
     """Record where ``store``'s auth and template prefixes live.
 
     Merges rather than replaces: one file serves every wrapper store, and
-    each store writes only its own row on init. ``locale`` is the plugin's
-    BCP-47 UI locale, written so the launcher can seed the client's own
-    language setting from it — same idea as the install-language modal.
+    each store writes only its own row on init.
+
+    Paths only. This used to carry the plugin's UI locale as well, so the
+    launcher could seed the vendor client's language from it, which
+    duplicated a question ``utils.locale.get_unifideck_locale`` already
+    answers correctly inside the launcher process (see PR #422). The copy
+    could go stale between backend starts, and on 2026-08-22 the file was
+    found absent on a working install, which silently reverted every
+    locale-dependent behaviour to English. ``wrapper_locale.plugin_locale``
+    asks the resolver instead.
     """
     path = prefix_index_path()
     index: dict[str, dict[str, str]] = {}
@@ -117,10 +122,7 @@ def write_prefix_index(
             index = {k: v for k, v in raw.items() if isinstance(v, dict)}
     except (OSError, ValueError):
         index = {}
-    row: dict[str, str] = {"auth": str(auth), "template": str(template)}
-    if locale:
-        row["locale"] = locale
-    index[store] = row
+    index[store] = {"auth": str(auth), "template": str(template)}
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
@@ -368,11 +370,11 @@ def inject(
         return False
     if not _identities_agree(spec, Path(source), Path(target)):
         return False
-    # Seed the launcher's language from the plugin locale at most once, so
-    # the first launch picks up the locale the language-selector modal
-    # already defaults to. Runs before the prefs merge, which then carries
-    # the seed into the target.
-    wrapper_prefs.ensure_locale_seeded(spec, source)
+    # Seed the launcher's language from the plugin locale whenever that locale
+    # has changed, so the client follows the language selector rather than
+    # staying at whatever was resolving on the very first launch. Runs before
+    # the prefs merge, which is what carries the seed on to the target.
+    wrapper_locale.ensure_locale_seeded(spec, source)
     wrapper_prefs.merge(spec, source, target, target_busy=target_busy)
     if not has_session(spec, source):
         logger.info(

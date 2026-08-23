@@ -40,6 +40,7 @@ vi.mock("../../api/rpc-routes", () => ({
   rpcRoutes: {
     storeAuth: "store_auth",
     requestAuthSync: "request_auth_sync",
+    checkStoreStatus: "check_store_status",
   },
 }));
 
@@ -214,6 +215,78 @@ describe("AuthDispatcher does not wedge on a flow that never settles", () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/closed before it completed/);
     expect(mockCall).not.toHaveBeenCalledWith("request_auth_sync", "battlenet");
+  });
+
+  /**
+   * Regression: a completed sign-in reported as a failure, which sent the
+   * user straight back into another launch.
+   *
+   * A wrapper store writes its session as the client shuts down, and the
+   * backend only clears its signed-out marker after the post-capture hook
+   * runs, so the terminal event can land after the exit grace has already
+   * expired. Failing on the timer alone made a successful Battle.net
+   * sign-in relaunch the client. Reported from end-to-end testing.
+   */
+  it("asks the backend before calling an exited sign-in failed", async () => {
+    vi.useFakeTimers();
+    // store_auth kick → slow path; check_store_status → store IS connected.
+    mockCall.mockImplementation((route: string) =>
+      route === "check_store_status"
+        ? Promise.resolve([{ store_id: "battlenet", available: true }])
+        : Promise.resolve({ success: false }),
+    );
+    const { AuthDispatcher } = await import("./AuthDispatcher");
+
+    const promise = AuthDispatcher.start("battlenet");
+    await vi.advanceTimersByTimeAsync(10);
+
+    appLifetime(BNET_APP_ID, true);
+    appLifetime(BNET_APP_ID, false);
+    await vi.advanceTimersByTimeAsync(25_000);
+
+    const result = await promise;
+    expect(result.success).toBe(true);
+    expect(mockCall).toHaveBeenCalledWith("check_store_status");
+    // Success must still drive the post-auth sync.
+    expect(mockCall).toHaveBeenCalledWith("request_auth_sync", "battlenet");
+  });
+
+  it("still fails when the backend agrees the store is not connected", async () => {
+    vi.useFakeTimers();
+    mockCall.mockImplementation((route: string) =>
+      route === "check_store_status"
+        ? Promise.resolve([{ store_id: "battlenet", available: false }])
+        : Promise.resolve({ success: false }),
+    );
+    const { AuthDispatcher } = await import("./AuthDispatcher");
+
+    const promise = AuthDispatcher.start("battlenet");
+    await vi.advanceTimersByTimeAsync(10);
+    appLifetime(BNET_APP_ID, true);
+    appLifetime(BNET_APP_ID, false);
+    await vi.advanceTimersByTimeAsync(25_000);
+
+    const result = await promise;
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/closed before it completed/);
+  });
+
+  it("keeps the failure verdict when the status probe itself throws", async () => {
+    vi.useFakeTimers();
+    mockCall.mockImplementation((route: string) =>
+      route === "check_store_status"
+        ? Promise.reject(new Error("backend gone"))
+        : Promise.resolve({ success: false }),
+    );
+    const { AuthDispatcher } = await import("./AuthDispatcher");
+
+    const promise = AuthDispatcher.start("battlenet");
+    await vi.advanceTimersByTimeAsync(10);
+    appLifetime(BNET_APP_ID, true);
+    appLifetime(BNET_APP_ID, false);
+    await vi.advanceTimersByTimeAsync(25_000);
+
+    await expect(promise).resolves.toMatchObject({ success: false });
   });
 
   it("lets a late STORE_AUTH_COMPLETE win over the exit grace", async () => {

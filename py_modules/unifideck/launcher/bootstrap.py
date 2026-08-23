@@ -75,10 +75,20 @@ def build_launcher_service(config: Any | None = None) -> Any:
         config=config,
     )
 def _load_standalone_config() -> Any:
-    """Load standalone config."""
+    """Load standalone config.
+
+    ``resolve_defaults_config_path`` rather than a hardcoded
+    ``defaults/config.json``: the Decky CLI build flattens that directory into
+    the install root, so the nested path finds nothing on a shipped install and
+    the merged view is the hardcoded fallback alone. PR #422 fixed exactly this
+    for Epic, Ubisoft and Amazon; this entry point and ``dispatcher`` were not
+    in its file list, which left every ``i18n``-derived answer in the launcher
+    running on defaults that were never loaded.
+    """
     from unifideck.config.config_manager import ConfigManager
+    from unifideck.config.defaults_path import resolve_defaults_config_path
     plugin_dir = _resolve_plugin_dir()
-    defaults_path = str(Path(plugin_dir) / "defaults" / "config.json")
+    defaults_path = resolve_defaults_config_path(plugin_dir)
     user_path = _user_config_path()
     return ConfigManager(
         defaults_path=defaults_path,

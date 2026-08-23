@@ -16,10 +16,15 @@ LOCALE_MAP: dict[str, tuple[str, str, str, str]] = {
     "ru-RU": ("00000419", "RUS", "ru-RU", "Russia"),
     "pl-PL": ("00000415", "PLK", "pl-PL", "Poland"),
     "zh-CN": ("00000804", "CHS", "zh-CN", "China"),
+    # Without its own row, ``smart_match_locale`` fell back to the "zh" prefix
+    # and handed a Traditional Chinese user Simplified.
+    "zh-TW": ("00000404", "CHT", "zh-TW", "Taiwan"),
     "ja-JP": ("00000411", "JPN", "ja-JP", "Japan"),
     "ko-KR": ("00000412", "KOR", "ko-KR", "Korea"),
     "nl-NL": ("00000413", "NLD", "nl-NL", "Netherlands"),
     "tr-TR": ("0000041f", "TRK", "tr-TR", "Turkey"),
+    "uk-UA": ("00000422", "UKR", "uk-UA", "Ukraine"),
+    "ar-SA": ("00000401", "ARA", "ar-SA", "Saudi Arabia"),
 }
 UBISOFT_LANG_MAP: dict[str, str] = {
     "en-US": "en", "de-DE": "de", "fr-FR": "fr", "es-ES": "es",

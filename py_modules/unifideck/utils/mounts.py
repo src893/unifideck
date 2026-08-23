@@ -44,6 +44,14 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from unifideck.utils.mount_naming import (
+    BY_UUID_DIR,
+    device_uuid,
+    legacy_mount_id,
+    unescape_mount_field,
+    uuid_by_device,
+)
+
 logger = logging.getLogger(__name__)
 
 # Filesystem types that should never be offered as install/scan
@@ -60,6 +68,11 @@ SKIP_FSTYPES = frozenset({
 
 VIRTUAL_PREFIXES = ("/dev/", "/sys/", "/proc/", "/run/user/")
 
+# Where the desktop session automounts removable media. A mount under
+# one of these is something the *user* plugged in, so refusing it is
+# worth a warning; refusing a system mount is routine and stays debug.
+AUTOMOUNT_ROOTS = ("/run/media/", "/media/")
+
 _DEMOTE_TIMEOUT = 5.0
 
 
@@ -72,6 +85,11 @@ class MountInfo:
     this mount (subdir creation, deeper scans) must also go through
     a demoted subprocess — the FUSE permission wall applies to every
     operation, not just the initial probe.
+
+    ``uuid`` is the filesystem's superblock UUID when udev exposes one.
+    It is this mount's durable identity: ``mount_point`` changes the
+    moment the user relabels the drive, and ``st_dev`` is a kernel
+    device number that shifts with USB enumeration order.
     """
 
     device: str
@@ -82,6 +100,12 @@ class MountInfo:
     writable: bool
     effective_uid: int | None = None
     effective_gid: int | None = None
+    uuid: str = ""
+
+
+def is_user_media(mount_point: str) -> bool:
+    """True if *mount_point* is under a desktop automount root."""
+    return mount_point.startswith(AUTOMOUNT_ROOTS)
 
 
 def parse_mount_options(raw: str) -> dict[str, str]:
@@ -140,10 +164,21 @@ def run_demoted(
         return None
 
 
-def mount_id(mount_point: str) -> str:
-    """Stable id derived from the mount point's basename."""
-    name = Path(mount_point).name.replace(" ", "_")
-    return f"ext:{name}" if name else "ext"
+def mount_id(m: MountInfo) -> str:
+    """Durable id for one mount — its filesystem UUID where possible.
+
+    Deriving the id from the mount point (the old scheme, kept in
+    ``legacy_mount_id``) made identity depend on the drive's label: two
+    drives labelled "External SSD" and "External_SSD" collapsed onto one
+    id, because the label was sanitized into it. Worse, the tiebreak was
+    ``st_dev``, so which drive kept the bare id depended on
+    ``/proc/mounts`` order — a replug could silently repoint a saved
+    default at the other drive. A superblock UUID survives relabelling,
+    replugging and reboots, and cannot collide by naming.
+    """
+    if m.uuid:
+        return f"ext:{m.uuid}"
+    return legacy_mount_id(m.mount_point)
 
 
 def is_sdcard_source(device: str) -> bool:
@@ -154,20 +189,23 @@ def is_sdcard_source(device: str) -> bool:
 def assign_unique_ids(mounts: list[MountInfo]) -> list[tuple[str, MountInfo]]:
     """Pair each mount with a UNIQUE ``ext:`` id, in input order.
 
-    ``mount_id`` derives from the mount-point basename, so two distinct
-    devices whose mount points share a basename (e.g. ``/run/media/deck/GAMES``
-    and ``/media/GAMES``) would collide on one id — duplicate picker rows
-    (React key clashes) and an ambiguous install-target lookup. On collision
-    the later device is disambiguated deterministically with its ``st_dev``
-    (a counter when ``st_dev`` is 0), so BOTH the enumerator (storage) and
-    the resolver (download) — which iterate the same ordered, deduped list —
-    derive the same id. The first/only device with a given basename keeps the
-    bare ``ext:<name>`` id, preserving existing behaviour in the common case.
+    ``mount_id`` returns a UUID-based id, which cannot collide by naming
+    — but two mounts can still land on one id: a cloned filesystem
+    (``dd``) genuinely repeats its UUID, and mounts with no UUID at all
+    fall back to a basename that two devices can share (e.g.
+    ``/run/media/deck/GAMES`` and ``/media/GAMES``). Either way a
+    duplicate id means duplicate picker rows (React key clashes) and an
+    ambiguous install-target lookup, so on collision the later device is
+    disambiguated deterministically with its ``st_dev`` (a counter when
+    ``st_dev`` is 0). BOTH the enumerator (storage) and the resolver
+    (download) iterate the same ordered, deduped list, so they derive
+    the same id. The first/only device with a given base keeps the bare
+    id.
     """
     seen: dict[str, int] = {}
     result: list[tuple[str, MountInfo]] = []
     for m in mounts:
-        base = mount_id(m.mount_point)
+        base = mount_id(m)
         count = seen.get(base, 0)
         seen[base] = count + 1
         if count == 0:
@@ -308,6 +346,7 @@ def _probe_stat_dev(mount_point: str, uid: int, gid: int | None) -> int:
 
 def _resolve_mount(
     device: str, mp: str, fstype: str, raw_options: str, require_writable: bool,
+    uuid: str = "",
 ) -> MountInfo | None:
     """Build a ``MountInfo`` for one already-eligible-type mount line, or ``None``."""
     options = parse_mount_options(raw_options)
@@ -334,17 +373,23 @@ def _resolve_mount(
                 mp, fstype, uid,
             )
 
+    # Refusing user-plugged media is the whole "drive not detected"
+    # failure, so say so at a level that reaches the log file — these
+    # were debug-only, which is why five session logs in the first
+    # report of this bug mentioned it exactly zero times.
+    reject = logger.warning if is_user_media(mp) else logger.debug
     if not is_dir:
-        logger.debug("[mounts] skip %s: not a directory (root denied)", mp)
+        reject("[mounts] skip %s (%s): not an accessible directory", mp, fstype)
         return None
     if require_writable and not writable:
-        logger.debug("[mounts] skip %s: not writable", mp)
+        reject("[mounts] skip %s (%s): not writable by uid %s", mp, fstype, os.geteuid())
         return None
 
     return MountInfo(
         device=device, mount_point=mp, fstype=fstype, st_dev=st_dev,
         options=options, writable=writable,
         effective_uid=effective_uid, effective_gid=effective_gid,
+        uuid=uuid,
     )
 
 
@@ -353,6 +398,7 @@ def scan_mounts(
     *,
     mounts_path: str | os.PathLike[str] = "/proc/mounts",
     require_writable: bool = True,
+    by_uuid_dir: Path = BY_UUID_DIR,
 ) -> list[MountInfo]:
     """Enumerate eligible external mounts from *mounts_path*.
 
@@ -368,22 +414,43 @@ def scan_mounts(
 
     Does not dedupe by device — see ``dedupe_by_device``, an opt-in
     step only ``storage.py`` needs (one row per physical device).
+
+    *by_uuid_dir* exists as a seam for tests, which must not have the
+    host's real UUID index bleed into fixtures whose device names
+    happen to match the machine they run on.
     """
     found: list[MountInfo] = []
     try:
-        lines = Path(mounts_path).read_text().splitlines()
+        # Bytes + os.fsdecode, not read_text(): a filesystem label that
+        # isn't valid UTF-8 (an old Latin-1 NTFS/exFAT label) makes
+        # read_text() raise UnicodeDecodeError — a ValueError, which the
+        # except clause below does NOT catch, so it propagated out of
+        # get_storage_locations and the picker lost *every* location,
+        # internal included. surrogateescape round-trips those bytes
+        # back out through every later Path call.
+        lines = os.fsdecode(Path(mounts_path).read_bytes()).splitlines()
     except OSError as e:
         logger.debug("[mounts] %s read failed: %s", mounts_path, e)
         return found
+
+    # One readlink sweep for the whole scan, not one per mount.
+    uuids = uuid_by_device(by_uuid_dir)
 
     for line in lines:
         parts = line.split()
         if len(parts) < 4:
             continue
-        device, mp, fstype, raw_options = parts[0], parts[1], parts[2], parts[3]
+        # Escapes must be decoded AFTER splitting on whitespace: the
+        # escaping is what keeps a spaced mount point one field.
+        device, mp, fstype, raw_options = (
+            unescape_mount_field(field) for field in parts[:4]
+        )
         if not is_eligible_type(fstype, mp):
             continue
-        info = _resolve_mount(device, mp, fstype, raw_options, require_writable)
+        info = _resolve_mount(
+            device, mp, fstype, raw_options, require_writable,
+            device_uuid(device, uuids),
+        )
         if info is None:
             continue
         if info.st_dev != 0 and info.st_dev == home_dev:

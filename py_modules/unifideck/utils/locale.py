@@ -8,14 +8,23 @@ edit to config.json, and this module picks it up automatically
 on the next plugin start.
 
 Resolution priority:
-  1. User preference → ConfigManager key 'ui.language'
-     (only if the saved value is a tag present in
+  1. User preference → ConfigManager keys 'ui.locale' (written
+     by the frontend language selector) and 'ui.language'
+     (legacy key). The value 'auto' is ignored so that the
+     explicit user choice wins over the Steam UI language.
+     Only if the saved value is a tag present in
      i18n.locales; unknown saved tags are silently ignored
-     and we fall through to system detection)
-  2. System POSIX → locale.getlocale() → mapped to the first
+     and we fall through to system detection.
+  2. Steam's own UI language → registry.vdf (see
+     utils/steam_language.py). Ahead of the POSIX locale
+     because SteamOS ships LANG=en_US.UTF-8 and never updates
+     it, so on a Deck the POSIX locale says nothing about the
+     language the user actually reads. This is what makes
+     'auto' resolve the same way the frontend resolves it.
+  3. System POSIX → locale.getlocale() → mapped to the first
      i18n.locales entry whose tag begins with the same 2-
      letter prefix (case-insensitive)
-  3. Source fallback → LocaleConfig.source.tag
+  4. Source fallback → LocaleConfig.source.tag
 """
 from __future__ import annotations
 
@@ -26,6 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .config_helpers import get_cfg
+from .steam_language import detect_steam_locale
 
 if TYPE_CHECKING:
     from unifideck.config import ConfigManager
@@ -33,7 +43,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Config keys used by this module.
-_USER_LANGUAGE_KEY = "ui.language"
+_USER_LANGUAGE_KEYS = ("ui.locale", "ui.language")
+# Value "auto" means the frontend hasn't fixed a language yet —
+# the frontend resolves "auto" from the Steam UI language, but the
+# backend resolves it from POSIX locale, causing a mismatch.
+# Ignore it and fall through to system detection.
+_AUTO = "auto"
 
 # The locale_config module lives in scripts/ which is a sibling
 # of py_modules/. It's not on the default Python path so we add
@@ -123,6 +138,26 @@ def get_locale_config(config: ConfigManager | None) -> Any | None:
         return None
 
 
+# The winning tier, as last reported by ``_resolved``. This chain stayed
+# broken for a long time because it was unobservable: logs showed which
+# language was used, never where it came from, so "English again" looked
+# identical whether the user's choice was ignored, Steam was unreadable or
+# the machine really was English. Reporting the tier at INFO makes one log
+# line answer that. Deduplicated because ``get_unifideck_locale`` runs on
+# every store request and market lookup, and a per-call line would drown
+# the log it is meant to clarify.
+_last_reported: tuple[str, str] | None = None
+
+
+def _resolved(tag: str, source: str) -> str:
+    """Report the winning tier once per distinct outcome, then return it."""
+    global _last_reported
+    if _last_reported != (tag, source):
+        _last_reported = (tag, source)
+        logger.info("[locale] resolved %s (source: %s)", tag, source)
+    return tag
+
+
 def get_unifideck_locale(config: ConfigManager | None) -> str:
     """Return the BCP-47 locale tag to use for UI and store APIs.
 
@@ -134,40 +169,39 @@ def get_unifideck_locale(config: ConfigManager | None) -> str:
     """
     lc = get_locale_config(config)
     # ─── 1. Explicit user preference ──────────────────────────
-    saved = get_cfg(config, _USER_LANGUAGE_KEY, None)
-    if isinstance(saved, str) and saved:
+    # Check both 'ui.locale' (written by frontend) and 'ui.language'
+    # (legacy). Skip 'auto' — it causes frontend/backend divergence.
+    saved = None
+    for key in _USER_LANGUAGE_KEYS:
+        val = get_cfg(config, key, None)
+        if isinstance(val, str) and val and val != _AUTO:
+            saved = val
+            break
+    if saved:
         # Normalise: accept both 'fr-FR' and 'fr_FR' for
         # compatibility with POSIX-style values.
         normalised = saved.replace("_", "-")
         if lc is not None and lc.get(normalised) is not None:
-            logger.debug(
-                "[locale] user preference: %s", normalised,
-            )
-            return normalised
+            return _resolved(normalised, "user preference")
         if lc is None:
             # No canonical list available — trust the saved
             # value as-is. This is the degraded path.
-            logger.debug(
-                "[locale] user preference (unvalidated): %s",
-                normalised,
-            )
-            return normalised
+            return _resolved(normalised, "user preference, unvalidated")
         logger.debug(
             "[locale] user preference '%s' not in "
             "i18n.locales, falling back to system", saved,
         )
-    # ─── 2. System POSIX locale ───────────────────────────────
+    # ─── 2. Steam's own UI language ───────────────────────────
+    steam = detect_steam_locale(lc)
+    if steam:
+        return _resolved(steam, "Steam UI language")
+    # ─── 3. System POSIX locale ───────────────────────────────
     system = _detect_system_locale(lc)
     if system:
-        logger.debug("[locale] system: %s", system)
-        return system
-    # ─── 3. Source fallback ───────────────────────────────────
+        return _resolved(system, "system POSIX locale")
+    # ─── 4. Source fallback ───────────────────────────────────
     if lc is not None:
-        source_tag = str(lc.source.tag)
-        logger.debug(
-            "[locale] source fallback: %s", source_tag,
-        )
-        return source_tag
+        return _resolved(str(lc.source.tag), "i18n.locales source")
     # Final degraded fallback: hardcoded en-US only when the
     # config system is completely broken.
     logger.warning(
@@ -202,9 +236,14 @@ def _detect_system_locale(lc: Any) -> str | None:
 
     Returns a tag from lc.all_tags whose 2-letter prefix
     matches the POSIX lang code, or None on any failure.
+
+    ``lc`` is None on every installed plugin — ``scripts/`` is not
+    packaged — so bailing out on it made this tier dead in production
+    and sent the whole chain to the hardcoded ``en-US`` at the bottom.
+    Without the canonical list the POSIX value is normalised and
+    trusted as-is, the same degraded treatment tier 1 gives a saved
+    preference it cannot validate.
     """
-    if lc is None:
-        return None
     try:
         lang_tuple = _locale.getlocale()
     except (ValueError, TypeError) as e:
@@ -217,6 +256,10 @@ def _detect_system_locale(lc: Any) -> str | None:
     prefix = lang_tuple[0].split("_")[0].lower()
     if not prefix:
         return None
+    if lc is None:
+        # 'es_ES' → 'es-ES'; a bare 'es' stays 'es'. i18next resolves
+        # either onto its closest bundle.
+        return lang_tuple[0].replace("_", "-")
     # Find the first entry in the canonical list whose tag
     # starts with this prefix. Order matches config.json,
     # which is also the UI dropdown order.

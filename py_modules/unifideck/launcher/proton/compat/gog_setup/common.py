@@ -15,6 +15,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from unifideck.launcher.proton.infrastructure.container_escape import (
+    escape_argv,
+)
+
 if TYPE_CHECKING:
     from unifideck.launcher.proton.infrastructure.core import ProtonLaunchPlan
 
@@ -135,7 +139,14 @@ async def run_wine(
     env["GAMEID"] = "umu-0"
     env["STORE"] = "gog"
     env["PROTON_VERB"] = "run"
-    cmd = [str(plan.python_bin), str(plan.umu_wrapper), exe, *args]
+    # Escape Steam's pressure-vessel when Force-Compat wrapped us, or every
+    # setup step nests a second container and returns rc=1 — observed as 9
+    # straight failures (scriptinterpreter + all four vcredists) in a field
+    # bundle, silently leaving the prefix without its redistributables.
+    # No-op when unwrapped. See infrastructure.container_escape.
+    cmd = escape_argv(
+        [str(plan.python_bin), str(plan.umu_wrapper), exe, *args], env, None,
+    )
     logger.info("[gog_setup] run: %s %s", Path(exe).name, " ".join(args[:4]))
     try:
         proc = await asyncio.create_subprocess_exec(

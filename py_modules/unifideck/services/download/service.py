@@ -7,6 +7,7 @@ branching; worker mixin handles the consumer loop.
 
 Persists the queue so pending downloads survive plugin restarts.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -28,6 +29,25 @@ if TYPE_CHECKING:
     from unifideck.stores import StoreRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _newest_per_id(items: list[DownloadItem]) -> list[DownloadItem]:
+    """Collapse to one entry per ``store:game_id``, keeping the last seen.
+
+    Order is preserved at each id's *newest* position, which is what the
+    Downloads page wants: the most recent outcome for a game, where that
+    outcome happened.
+    """
+    keep: dict[str, DownloadItem] = {}
+    for item in items:
+        key = f"{item.store}:{item.game_id}"
+        # Pop before setting so the entry moves to the end rather than
+        # keeping its first-seen slot. ``get_queue`` reverses this list, so
+        # position is recency: a retried game belongs where its newest
+        # attempt happened. Matches what ``_cleanup_running`` does live.
+        keep.pop(key, None)
+        keep[key] = item
+    return list(keep.values())
 
 
 class DownloadService(_WorkerMixin):
@@ -86,6 +106,7 @@ class DownloadService(_WorkerMixin):
         # Emit queued event for all items restored from disk
         if self._bus:
             from unifideck.core.types.events import Events
+
             for item in self._queue:
                 await self._bus.emit(Events.DOWNLOAD_QUEUED, item=item.to_dict())
 
@@ -165,11 +186,7 @@ class DownloadService(_WorkerMixin):
                 # indeterminate "Installing in <vendor client>" state instead
                 # of a fake "Download Queued"/"DOWNLOADING 0%" bar, even while
                 # it waits behind other downloads in the queue.
-                download_phase=(
-                    "manual"
-                    if uses_manual_download_phase(store)
-                    else "downloading"
-                ),
+                download_phase=("manual" if uses_manual_download_phase(store) else "downloading"),
             )
             self._queue.append(item)
 
@@ -178,6 +195,7 @@ class DownloadService(_WorkerMixin):
 
         if self._bus:
             from unifideck.core.types.events import Events
+
             await self._bus.emit(Events.DOWNLOAD_QUEUED, item=item.to_dict())
 
         return Result(success=True)
@@ -223,6 +241,7 @@ class DownloadService(_WorkerMixin):
 
         if self._bus:
             from unifideck.core.types.events import Events
+
             await self._bus.emit(Events.DOWNLOAD_CANCELLED, item=item.to_dict())
 
         return Result(success=True)
@@ -265,10 +284,7 @@ class DownloadService(_WorkerMixin):
             # ``DownloadItem`` has no ``id`` field — the frontend's ``id`` is
             # derived in ``to_dict`` as ``"<store>:<game_id>"``, so rebuild it
             # here to match what the UI sends back.
-            self._finished = [
-                i for i in self._finished
-                if f"{i.store}:{i.game_id}" != item_id
-            ]
+            self._finished = [i for i in self._finished if f"{i.store}:{i.game_id}" != item_id]
         removed = before - len(self._finished)
         if removed:
             await self._save_history()
@@ -318,10 +334,15 @@ class DownloadService(_WorkerMixin):
         Reuses the queue JSON codec (it's a generic ``list[DownloadItem]``).
         Capped to the most-recent ``MAX_FINISHED_HISTORY`` so a large
         on-disk file can't grow the in-memory list unbounded.
+
+        Collapses duplicate ids on the way in, keeping the newest. Writers
+        now keep one row per game, but a file written before that still
+        holds a row per attempt, and those would otherwise render as
+        repeated identical cards until the user cleared history by hand.
         """
         try:
             items = await load_queue(self._history_file)
-            self._finished = items[-MAX_FINISHED_HISTORY:]
+            self._finished = _newest_per_id(items)[-MAX_FINISHED_HISTORY:]
         except Exception as e:
             logger.warning("[DownloadService] failed to load history, starting empty: %s", e)
             self._finished = []

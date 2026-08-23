@@ -42,6 +42,18 @@ def _manifest(d: Path, store: str, store_id: str) -> None:
     )
 
 
+def _ubisoft_marker(d: Path, space_id: str) -> None:
+    d.mkdir(parents=True, exist_ok=True)
+    (d / ".unifideck_ubisoft").write_text(
+        json.dumps({
+            "space_id": space_id,
+            "install_path": str(d),
+            "game_title": "x",
+            "executable": "x.exe",
+        }),
+    )
+
+
 def _record_roots(home: Path, *, legendary=None, nile=None, games_map=None):
     (home / ".config/legendary").mkdir(parents=True, exist_ok=True)
     (home / ".config/legendary/installed.json").write_text(
@@ -147,3 +159,47 @@ def test_sweep_all_removes_marked_keeps_unmarked(
     assert not (sd / "Afterimage").exists()
     assert not (home / "Games/Overcooked2").exists()
     assert keep.exists()  # untouched — we never marked it
+
+
+# --------------------------------------------------------------------------
+# Ubisoft install marker
+# --------------------------------------------------------------------------
+def test_ubisoft_marker_is_parsed_and_swept(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A standalone Ubisoft install dir is Unifideck-owned and must go.
+
+    Ubisoft games usually live inside their prefix (deleted separately), but
+    an install at a standalone path was invisible to the sweep: it knew only
+    the GOG and Epic/Amazon marker names.
+    """
+    home = _home(monkeypatch, tmp_path)
+    sd = home / "microSD/Games"
+    _ubisoft_marker(sd / "Rayman Origins", "5c4c2f5f4e0165088c2ffff5")
+    _gog_marker(sd / "Brigador", "1356485086")
+    _record_roots(home, games_map=f"gog:1356485086=/e\t{sd / 'Brigador'}\t-1\n")
+
+    roots = marker_sweep.collect_install_roots()
+    assert marker_sweep.find_for_game(
+        roots, "ubisoft", "5c4c2f5f4e0165088c2ffff5",
+    ) == (sd / "Rayman Origins")
+
+    assert marker_sweep.sweep_all(roots) == 2
+    assert not (sd / "Rayman Origins").exists()
+    assert not (sd / "Brigador").exists()
+
+
+def test_ubisoft_marker_without_space_id_is_skipped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """An unparseable marker must not authorise a delete."""
+    home = _home(monkeypatch, tmp_path)
+    sd = home / "microSD/Games"
+    game = sd / "Half Written Install"
+    game.mkdir(parents=True)
+    (game / ".unifideck_ubisoft").write_text(json.dumps({"game_title": "x"}))
+    _gog_marker(sd / "Brigador", "1356485086")
+    _record_roots(home, games_map=f"gog:1356485086=/e\t{sd / 'Brigador'}\t-1\n")
+
+    assert marker_sweep.sweep_all(marker_sweep.collect_install_roots()) == 1
+    assert game.exists()

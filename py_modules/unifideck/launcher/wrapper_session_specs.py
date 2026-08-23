@@ -168,6 +168,11 @@ class SessionSpec:
     # The client's own settings file, moved key by key rather than copied.
     # A store without one leaves this None and no preference pass runs.
     prefs: PrefsSpec | None = None
+    # drive_c-relative content-addressed caches worth carrying back to the
+    # template so the next prefix does not re-download them. Read by
+    # ``launcher/wrapper_client_cache``, which documents why this may only
+    # ever name a *content store* and never an extracted program tree.
+    client_cache: tuple[str, ...] = ()
 
     def expand(self, drive_c: Path, patterns: tuple[str, ...]) -> list[Path]:
         """Resolve ``patterns`` against ``drive_c``, expanding any ``*``."""
@@ -256,6 +261,25 @@ _BNET_PREFS = PrefsSpec(
     ),
 )
 
+# The Agent's content-addressed store, and nothing else under ``Agent/``.
+#
+# Measured 2026-08-22: on a fresh prefix the Agent makes its own self-update
+# the single exclusive operation, so the game's download sits behind it. That
+# costs 2 seconds when the local store already holds the build's tagged
+# content and 45 minutes when it does not. The prefix is deleted on
+# cancel, so the next attempt re-downloads the same ~9 MB from zero. Same
+# build hash both times (``d049a9f9…``, Agent 2.40.3.9700); only the TACT tag
+# query differed (``Volatile Windows US?`` vs ``KR? acct-IND? geoip-IN?``),
+# because the bootstrapper warms the store pre-login as US and the login then
+# moves the account's region.
+#
+# Sibling ``Agent.<build>/`` is deliberately absent: that is the extracted,
+# running Agent, and a half-applied copy inherited by every future prefix is a
+# far worse failure than a slow one. ``Logs/`` under it is likewise skipped:
+# carrying old logs forward is what made the salvage in
+# ``stores/shared/prefix_forensics`` ambiguous about which run it was reading.
+_BNET_CLIENT_CACHE = ("ProgramData/Battle.net/Agent/data",)
+
 # One row per wrapper store. Ubisoft joins this table when its private
 # ``session/`` package is ported onto the shared layer; its ``identity``
 # reader is the ``system.reg`` MachineGuid probe that guards its DPAPI vault.
@@ -275,6 +299,7 @@ SPECS: dict[str, SessionSpec] = {
         ),
         identity=read_gaclientid,
         prefs=_BNET_PREFS,
+        client_cache=_BNET_CLIENT_CACHE,
     ),
 }
 

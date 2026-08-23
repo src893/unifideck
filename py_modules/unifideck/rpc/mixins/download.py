@@ -40,7 +40,7 @@ from unifideck.core.types.identifiers import (
 )
 from unifideck.rpc.errors import RpcError
 from unifideck.services import update_check_cache
-from unifideck.utils import mounts
+from unifideck.utils import mount_naming, mounts
 
 logger = logging.getLogger(__name__)
 
@@ -469,11 +469,12 @@ def _external_games_path(storage_type: str) -> str | None:
     ``storage_type == "sdcard"`` is the legacy alias (configs/callers
     predating the unique-id fix) — resolved to the first eligible
     external mount, preserving pre-fix behavior. Any other value is a
-    unique ``ext:<name>`` id from ``mounts.mount_id`` — resolved to
-    that SPECIFIC mount only; if it's no longer eligible (unplugged,
-    no longer writable) this returns ``None`` rather than silently
-    substituting a different device (the caller falls back to
-    internal storage — see ``install_game``).
+    unique ``ext:<uuid>`` id from ``mounts.mount_id`` (or the older
+    ``ext:<name>`` form, still accepted) — resolved to that SPECIFIC
+    mount only; if it's no longer eligible (unplugged, no longer
+    writable) this returns ``None`` rather than silently substituting a
+    different device (the caller falls back to internal storage — see
+    ``install_game``).
     """
     home_dev = mounts.stat_dev(str(Path.home()))
     # Dedupe first so the "first external" (legacy alias) and the unique-id
@@ -494,6 +495,21 @@ def _external_games_path(storage_type: str) -> str | None:
              if loc_id == storage_type),
             None,
         )
+        if match is None:
+            # An id saved before ids moved to the filesystem UUID, e.g.
+            # a queued install or a frontend that hasn't re-fetched the
+            # picker yet. Resolve it the old way rather than dropping
+            # the user's chosen drive and falling back to internal.
+            match = next(
+                (m for m in externals
+                 if mount_naming.legacy_mount_id(m.mount_point) == storage_type),
+                None,
+            )
+            if match is not None:
+                logger.info(
+                    "[download] legacy name-based id %s resolved to %s",
+                    storage_type, match.mount_point,
+                )
     if match is None:
         logger.warning("[download] no eligible external mount for storage=%s", storage_type)
         return None

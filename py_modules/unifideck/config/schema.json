@@ -2,14 +2,10 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/src893/unifideck/config.schema.json",
   "title": "Unifideck Configuration Schema",
-  "description": "JSON Schema for defaults/config.json and user overrides. Strict mode (additionalProperties: false) everywhere to catch typos in key names. Covers all 24 top-level sections (paths, cache_ttl, sync, dedup, download, cli_timeouts, stores, metadata, artwork, cdp, accounts, cloud, logs, circuit_breaker, disk_space, compat, auth, discovery, probes, proton, binary_resolver, i18n, security \u2014 the 23 content sections plus _comment). To add a new config key, add it both to the backend code AND to this schema \u2014 the validator will reject unknown keys at boot.",
+  "description": "JSON Schema for defaults/config.json and user overrides. Strict mode (additionalProperties: false) everywhere to catch typos in key names. Covers all 27 top-level sections (paths, cache_ttl, sync, dedup, download, cli_timeouts, stores, metadata, artwork, cdp, accounts, cloud, steam, logs, circuit_breaker, disk_space, compat, auth, discovery, ui, probes, proton, binary_resolver, i18n, security \u2014 the 25 content sections plus _comment and _comments). To add a new config key, add it both to the backend code AND to this schema \u2014 the validator will reject unknown keys at boot.",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "paths",
-    "stores",
-    "dedup"
-  ],
+  "required": ["paths", "stores", "dedup"],
   "properties": {
     "_comment": {
       "type": "string",
@@ -22,10 +18,7 @@
     "paths": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "data_dir",
-        "cache_dir"
-      ],
+      "required": ["data_dir", "cache_dir"],
       "properties": {
         "data_dir": {
           "$ref": "#/$defs/nonEmptyString"
@@ -77,9 +70,7 @@
     "dedup": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "tracked_stores"
-      ],
+      "required": ["tracked_stores"],
       "description": "Cross-store + Steam-native deduplication settings.",
       "properties": {
         "_comment": {
@@ -139,13 +130,7 @@
     "stores": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "gog",
-        "epic",
-        "amazon",
-        "ubisoft",
-        "microsoft"
-      ],
+      "required": ["gog", "epic", "amazon", "ubisoft", "microsoft"],
       "properties": {
         "gog": {
           "$ref": "#/$defs/gogStore"
@@ -312,6 +297,17 @@
               "$ref": "#/$defs/cloudFailureBehavior"
             }
           }
+        }
+      }
+    },
+    "steam": {
+      "type": "object",
+      "description": "Steam client facts the frontend confirms and the backend persists. Written by steam/current_user.py::set_authoritative (CONFIG_ACTIVE_USER_KEY = 'steam.active_user'). It MUST be declared here: this schema is strict, so an undeclared key fails validation and puts the plugin into degraded mode on every boot, silently dropping the user's other overrides. Observed in the field on a ROG Ally X, where every session logged \"'steam' was unexpected\".",
+      "additionalProperties": false,
+      "properties": {
+        "active_user": {
+          "type": "string",
+          "description": "Steam account id (the userdata directory name) the frontend confirmed. Read first by the service-path resolver so a stale or ambiguous probe cannot shadow the live user."
         }
       }
     },
@@ -547,10 +543,7 @@
     },
     "cloudFailureBehavior": {
       "type": "string",
-      "enum": [
-        "silent",
-        "toast"
-      ],
+      "enum": ["silent", "toast"],
       "description": "Cloud sync failure UI policy. 'silent' logs only, 'toast' shows a dismissable banner. A blocking 'prompt' mode was rejected \u2014 it would require IPC between the out-of-process launcher and the long-lived plugin."
     },
     "httpsUrl": {
@@ -564,12 +557,7 @@
     "gogStore": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "client_id",
-        "auth_url",
-        "token_url",
-        "token_file"
-      ],
+      "required": ["client_id", "auth_url", "token_url", "token_file"],
       "properties": {
         "client_id": {
           "$ref": "#/$defs/nonEmptyString"
@@ -627,10 +615,7 @@
     "epicStore": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "cli_binary_search_paths",
-        "user_file"
-      ],
+      "required": ["cli_binary_search_paths", "user_file"],
       "properties": {
         "_comment": {
           "type": "string"
@@ -681,10 +666,7 @@
     "amazonStore": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "cli_binary_search_paths",
-        "user_file"
-      ],
+      "required": ["cli_binary_search_paths", "user_file"],
       "properties": {
         "_comment": {
           "type": "string"
@@ -735,10 +717,7 @@
     "ubisoftStore": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "data_dir",
-        "prefixes_dir"
-      ],
+      "required": ["data_dir", "prefixes_dir"],
       "properties": {
         "data_dir": {
           "$ref": "#/$defs/nonEmptyString"
@@ -830,12 +809,7 @@
     "microsoftStore": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "client_id",
-        "token_file",
-        "auth_url",
-        "token_url"
-      ],
+      "required": ["client_id", "token_file", "auth_url", "token_url"],
       "properties": {
         "client_id": {
           "$ref": "#/$defs/nonEmptyString"
@@ -888,10 +862,7 @@
     "battlenetStore": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "data_dir",
-        "prefixes_dir"
-      ],
+      "required": ["data_dir", "prefixes_dir"],
       "properties": {
         "data_dir": {
           "$ref": "#/$defs/nonEmptyString"

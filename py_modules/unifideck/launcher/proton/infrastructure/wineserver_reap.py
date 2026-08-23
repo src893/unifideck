@@ -105,6 +105,30 @@ def _pids_holding_server_dir(server_name: str) -> list[int]:
     return pids
 
 
+def prefix_wine_pids(prefix: Path | str) -> list[int]:
+    """PIDs of every Wine process bound to ``prefix``, without killing any.
+
+    The read-only half of :func:`reap_prefix_wineserver`, split out because
+    "is anything alive in this prefix" is a question worth asking on its own —
+    a live wineserver owns the prefix registry and rewrites it from memory
+    when it exits, so a write underneath one is discarded in silence. See
+    ``wine_registry.registry_is_writable``, which takes this count.
+
+    Deliberately here rather than reusing ``handlers/battlenet_watch.scan``:
+    that module is Blizzard-specific (its ``EXCLUDED_IMAGES`` and
+    ``_client_pids`` name Battle.net images), and this is asked from
+    store-agnostic dispatch.
+
+    Empty for a prefix that cannot be stat'd, which is the same answer a
+    prefix with nothing running gives — both mean "nothing owns the
+    registry", and neither is an error.
+    """
+    server_name = server_dir_for_prefix(Path(prefix))
+    if server_name is None:
+        return []
+    return _pids_holding_server_dir(server_name)
+
+
 def reap_prefix_wineserver(prefix: Path) -> int:
     """SIGKILL any wineserver/Wine process bound to ``prefix``'s server dir.
 

@@ -52,6 +52,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from unifideck.launcher.wrapper_locale import bootstrapper_locale
 from unifideck.stores.battlenet import paths
 from unifideck.stores.shared.wine_env import WineEnvResolver
 from unifideck.utils.vulkan import Vulkan32, detect_32bit_vulkan
@@ -80,6 +81,29 @@ INSTALLER_ARGS = (
     "--lang=enUS",
     "--installpath=C:\\Program Files (x86)\\Battle.net",
 )
+
+
+def installer_args() -> tuple[str, ...]:
+    """:data:`INSTALLER_ARGS` with the language taken from the plugin locale.
+
+    The install path stays pinned: ``wrapper_session_specs`` hashes it to find
+    the client's section in ``Battle.net.config``, so it must be the same
+    string in every prefix.
+
+    The language does not have to be, and pinning it had a cost beyond an
+    English wizard. The bootstrapper derives its **region** from the locale
+    (``Configuration: locale=enUS region=US`` in its own log) and warms the
+    Agent's content store for that region *before* login. The account's real
+    region then arrives at login and invalidates the warm-up, which is a
+    45-minute re-download the first time. Guaranteed for every non-US user
+    while this said ``enUS`` unconditionally.
+
+    ``bootstrapper_locale`` falls back to ``enUS`` for any tag Battle.net does
+    not ship, because the failure mode of a bad value here is the wizard
+    stalling on its language screen with no visible window; see its docstring.
+    """
+    locale = bootstrapper_locale("battlenet")
+    return (f"--lang={locale}", *INSTALLER_ARGS[1:])
 
 GAMEID = "umu-battlenet"
 
@@ -254,8 +278,17 @@ async def run_silent_install(
     resolver: WineEnvResolver,
     *,
     stall_timeout: float | None = None,
+    proton_path: str | None = None,
 ) -> InstallOutcome:
     """Run the installer inside ``prefix`` under umu. Never raises.
+
+    ``proton_path`` is the Proton the *launcher* will later run this
+    client with, passed down so the prefix is built and driven by one
+    Proton rather than two. Without it the resolver picks its own, and on
+    a host where those differ the prefix is created by one Wine build and
+    every subsequent client start happens under another. ``None`` leaves
+    the resolver to choose, which is still the right answer for a caller
+    that has no launch plan to speak from.
 
     ``stall_timeout`` arms :func:`_stall_watchdog` for hosts proven to lack
     a 32-bit Vulkan driver. ``None`` — every other path — keeps the plain
@@ -287,7 +320,12 @@ async def run_silent_install(
         logger.error("[Battlenet] umu-run not found — cannot install the client")
         return InstallOutcome(installed=False)
 
-    env = resolver.build_env(prefix, GAMEID)
+    env = resolver.build_env(prefix, GAMEID, proton_path=proton_path)
+    logger.info(
+        "[Battlenet] installer PROTONPATH=%s (%s)",
+        env.get("PROTONPATH"),
+        "from the launch plan" if proton_path else "resolver's choice",
+    )
     if not env.get("DISPLAY") and not env.get("WAYLAND_DISPLAY"):
         # Headless Decky env: a Wine process with no display hangs instead
         # of failing, so refuse rather than burn the timeout.
@@ -303,7 +341,7 @@ async def run_silent_install(
         proc = await asyncio.create_subprocess_exec(
             umu_run,
             str(installer),
-            *INSTALLER_ARGS,
+            *installer_args(),
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -444,12 +482,21 @@ async def bootstrap_client(
     installer_cache: Path,
     resolver: WineEnvResolver,
     on_warning: Callable[[], None] | None = None,
+    proton_path: str | None = None,
 ) -> BootstrapResult:
     """Ensure ``prefix`` contains a usable, tweaked Battle.net client.
 
     ``on_warning`` fires once, before the install, when the host is proven
     to lack a 32-bit Vulkan driver. It exists so the launcher can toast
     that warning without this module reaching into the frontend bridge.
+
+    ``proton_path`` is the launcher's own Proton; see
+    :func:`run_silent_install`.
+
+    Reached for an *incomplete* client too, not only a missing one:
+    ``client_installed`` requires the versioned payload, so a prefix
+    holding only the bootstrapper's shim falls through to the installer
+    and gets completed in place rather than passing as ready.
     """
     if paths.client_installed(prefix):
         if not tweaks.tweaks_applied(prefix):
@@ -468,7 +515,8 @@ async def bootstrap_client(
 
     preseed_client_config(prefix)
     outcome = await run_silent_install(
-        installer, prefix, resolver, stall_timeout=stall_timeout,
+        installer, prefix, resolver,
+        stall_timeout=stall_timeout, proton_path=proton_path,
     )
     if not outcome.installed:
         return _install_failure(outcome)

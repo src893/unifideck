@@ -69,8 +69,14 @@ export const CleanupSection: FC = () => {
         }
       ).SteamClient?.Apps;
       for (const id of result.deleted_app_ids) {
+        // `deleted_app_ids` are the SIGNED 32-bit ids as stored in
+        // shortcuts.vdf, but `RemoveShortcut` keys off the UNSIGNED id in
+        // `appStore.m_mapApps` — passing the signed form matched nothing,
+        // so this loop quietly did nothing and the tiles lingered until
+        // the next Steam restart. Mirrors `orphan_scan._to_unsigned`.
+        const unsigned = id < 0 ? id + 0x100000000 : id;
         try {
-          apps?.RemoveShortcut(id);
+          apps?.RemoveShortcut(unsigned);
         } catch {
           /* best effort */
         }
@@ -79,6 +85,15 @@ export const CleanupSection: FC = () => {
     await deleteAllUnifideckCollections().catch((e) =>
       console.error("[Cleanup] delete collections failed", e),
     );
+    // Tell the frontend its library is gone. Two mechanisms, two scopes:
+    // the backend emits SHORTCUT_INSTALL_STATE_CHANGED per cleared game
+    // (Downloads tab + per-app install flags), while this window event is
+    // the existing "re-read the whole library" hook — LibraryContext,
+    // library-filters, overview-enrichment and UnifiedLibraryView all
+    // listen, so store tabs and counts drop to zero without a reload.
+    // Safe after the collection delete: an empty library makes
+    // `syncTab` delete leftover `[Unifideck]` collections, never create them.
+    window.dispatchEvent(new CustomEvent("unifideck-sync-completed"));
     const totalTouched =
       result.deleted_games +
       result.deleted_artwork_count +

@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 CLIENT_DIR = "Program Files (x86)/Battle.net"
 CLIENT_EXE = "Battle.net.exe"
 LAUNCHER_EXE = "Battle.net Launcher.exe"
+# The client itself, inside the versioned payload dir — a DLL, not an exe.
+# Mirrors ``stores/battlenet/paths.CLIENT_DLL``.
+CLIENT_DLL = "battle.net.dll"
 
 def id_map_path() -> Path:
     """Where the Battle.net id map lives.
@@ -83,6 +86,60 @@ def find_launcher_exe(prefix: Path | str) -> Path | None:
         return None
     exe = parent / LAUNCHER_EXE
     return exe if exe.is_file() else None
+
+
+def find_payload_dir(prefix: Path | str) -> Path | None:
+    """The newest versioned client payload ``Battle.net.<build>/``, or None.
+
+    ``Battle.net.exe`` beside the launcher is a ~1 MB **shim**: a host
+    process that loads the real client out of this directory, and the
+    bootstrapper writes the shim long before that payload finishes
+    downloading. An install interrupted in that window leaves a prefix that
+    passes every "is the client here" check and cannot start — measured in
+    the field, where it poisoned the auth prefix, the template derived from
+    it and every game prefix cloned from that, so each launch burned the
+    full 300 s readiness timeout and no amount of signing out repaired it.
+
+    Keyed on the client DLL (``battle.net.dll``), NOT on an exe: the payload
+    dir holds no ``Battle.net.exe`` at all — the client is a DLL, beside
+    ``libcef.dll`` and ``Battle.net.mpq``. Its only exes are the auxiliary
+    ``BlizzardError.exe`` / ``GameSessionMonitor.exe``. Keying on an exe
+    reported every correctly installed client as incomplete, which refused
+    every install and made every client unstartable.
+
+    The backend states the same rule in ``stores/battlenet/paths.py``
+    (:func:`client_payload_dir`). It is written twice on purpose: this
+    module runs in the out-of-process launcher under the SYSTEM python and
+    must not import the plugin backend. ``test_battlenet_paths_config``
+    holds both to the same fixtures.
+    """
+    parent = _client_dir(prefix)
+    if parent is None:
+        return None
+    versioned = [p for p in parent.glob("Battle.net.*") if p.is_dir()]
+
+    def _build(path: Path) -> tuple[int, str]:
+        suffix = path.name.rsplit(".", 1)[-1]
+        return (int(suffix), path.name) if suffix.isdigit() else (-1, path.name)
+
+    for candidate in sorted(versioned, key=_build, reverse=True):
+        if _holds_client_dll(candidate):
+            return candidate
+    return None
+
+
+def _holds_client_dll(payload: Path) -> bool:
+    """Whether a payload directory holds the client DLL (case-insensitive).
+
+    Mirrors ``stores/battlenet/paths._holds_client_dll``.
+    """
+    try:
+        return any(
+            entry.name.lower() == CLIENT_DLL and entry.is_file()
+            for entry in payload.iterdir()
+        )
+    except OSError:
+        return False
 
 
 def _load_id_map() -> dict[str, dict[str, object]]:
@@ -156,4 +213,19 @@ def record_launch_ok(uid: str, family: str, when: float) -> None:
 
 
 def client_installed(prefix: Path | str) -> bool:
-    return find_client_exe(prefix) is not None
+    """Both halves present — the ``--exec`` shim and the payload it loads.
+
+    See :func:`find_payload_dir` for why the shim alone is not enough.
+    """
+    return find_client_exe(prefix) is not None and find_payload_dir(prefix) is not None
+
+
+def client_startable(prefix: Path | str) -> bool:
+    """Everything the two-phase launch needs before it starts anything.
+
+    Phase A runs ``Battle.net Launcher.exe`` and phase C drives
+    ``Battle.net.exe``, so both must exist — and so must the payload the
+    launcher hands off to, which is the piece an interrupted install
+    leaves out.
+    """
+    return find_launcher_exe(prefix) is not None and client_installed(prefix)

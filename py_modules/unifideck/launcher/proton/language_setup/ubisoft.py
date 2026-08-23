@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .registry_io import (
-    _apply_windows_locale,
     _atomic_write_text,
     _resolve_prefix,
 )
@@ -95,14 +94,21 @@ def apply_ubisoft_language(
     prefix_path: str, space_id: str = "",
     config: ConfigManager | None = None,
 ) -> bool:
-    """Apply UBISOFT language."""
+    """Set UPC's own ``Language`` for this install.
+
+    The prefix's Windows locale is **not** written here any more: it is
+    store-agnostic and applied once from ``proton.dispatch`` for every
+    launch, so doing it here as well was a duplicate write of identical
+    values. What remains is genuinely Ubisoft's — the UPC launcher reads its
+    language from its own registry key, in its own two-letter spelling, under
+    an install id only this store knows how to resolve.
+    """
     language = get_unifideck_language(config)
     logger.info(
         "[language_setup.ubisoft] applying %s to prefix=%s space_id=%s",
         language, prefix_path, space_id,
     )
+    if not space_id:
+        return False
     resolved_prefix = _resolve_prefix(prefix_path)
-    windows_ok = _apply_windows_locale(prefix_path, language)
-    if space_id:
-        _apply_ubisoft_upc_language(resolved_prefix, space_id, language)
-    return windows_ok
+    return _apply_ubisoft_upc_language(resolved_prefix, space_id, language)

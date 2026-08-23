@@ -12,6 +12,7 @@ inlined, making the main loop hard to scan. Split into two
 private helpers so the outer loop reads as
 ``while: pop → dispatch → sleep``.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,12 +22,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from unifideck.core import stale_installs
-from unifideck.core.types import Game
 from unifideck.launcher.wrapper_stores import (
     is_wrapper_store,
     uses_manual_download_phase,
 )
 
+from .installed_game import build_installed_game
 from .models import MAX_FINISHED_HISTORY, DownloadItem, classify_download_error
 from .worker_helpers import apply_dict_progress, track_task
 from .wrapper_signals import dispatch_wrapper_install
@@ -109,10 +110,7 @@ class _WorkerMixin:
         """
         to_start: list[DownloadItem] = []
         async with self._lock:
-            while (
-                len(self._running) < self._max_concurrent
-                and self._queue
-            ):
+            while len(self._running) < self._max_concurrent and self._queue:
                 item = self._queue.pop(0)
                 key = f"{item.store}:{item.game_id}"
                 self._running[key] = item
@@ -120,7 +118,8 @@ class _WorkerMixin:
         return to_start
 
     async def _dispatch_items(
-        self, to_start: list[DownloadItem],
+        self,
+        to_start: list[DownloadItem],
     ) -> None:
         """Persist the queue change, then spawn install tasks.
 
@@ -166,7 +165,8 @@ class _WorkerMixin:
             raise
         except Exception as e:
             logger.exception(
-                "[DownloadWorker] exception during install of %s", key,
+                "[DownloadWorker] exception during install of %s",
+                key,
             )
             await self._emit_failure(item, str(e), key)
         finally:
@@ -192,13 +192,15 @@ class _WorkerMixin:
         else:
             logger.error(
                 "[DownloadWorker] failed install for %s: %s",
-                key, result.error,
+                key,
+                result.error,
             )
             await self._emit_failure(item, result.error, key)
 
     async def _reject_microsoft(self, item: DownloadItem) -> None:
         """Emit DOWNLOAD_FAILED for cloud-only Microsoft titles."""
         from unifideck.core.types.events import Events
+
         logger.warning(
             "[DownloadWorker] Microsoft games are cloud-only, cannot download",
         )
@@ -218,6 +220,7 @@ class _WorkerMixin:
         see the right state.
         """
         from unifideck.core.types.events import Events
+
         item.status = "running"
         item.start_time = time.time()
         # Wrapper stores are vendor-client-driven installs — there is no
@@ -231,7 +234,11 @@ class _WorkerMixin:
             await self._bus.emit(Events.DOWNLOAD_STARTED, item=item.to_dict())
 
     async def _dispatch_install(
-        self, item: DownloadItem, store: StoreBase, progress_cb: Any, key: str,
+        self,
+        item: DownloadItem,
+        store: StoreBase,
+        progress_cb: Any,
+        key: str,
     ) -> InstallResult:
         """Call the correct store entry point for *item*.
 
@@ -249,7 +256,10 @@ class _WorkerMixin:
             # nobody asked for.
             if is_wrapper_store(item.store):
                 return await dispatch_wrapper_install(
-                    self._bus, item, store, progress_cb,
+                    self._bus,
+                    item,
+                    store,
+                    progress_cb,
                 )
             return await store.update_game(item.game_id, progress_cb=progress_cb)
         logger.info("[DownloadWorker] starting install for %s", key)
@@ -262,11 +272,16 @@ class _WorkerMixin:
         # — is the one that vetoes the download; see stale_installs. Only
         # reachable for a fresh install — an update wants its files intact.
         await asyncio.to_thread(
-            stale_installs.reconcile_for_install, item.store, item.game_id,
+            stale_installs.reconcile_for_install,
+            item.store,
+            item.game_id,
         )
         if is_wrapper_store(item.store):
             return await dispatch_wrapper_install(
-                self._bus, item, store, progress_cb,
+                self._bus,
+                item,
+                store,
+                progress_cb,
             )
         # GOG and Epic honour a user-picked install language (GOG via
         # gogdl's --lang, Epic via a legendary SDL install tag); the
@@ -275,7 +290,9 @@ class _WorkerMixin:
         if item.store in ("gog", "epic") and item.language:
             extra["language"] = item.language
             logger.info(
-                "[DownloadWorker] %s install language=%s", key, item.language,
+                "[DownloadWorker] %s install language=%s",
+                key,
+                item.language,
             )
         return await store.install_game(  # type: ignore[call-arg]
             item.game_id,
@@ -285,10 +302,15 @@ class _WorkerMixin:
         )
 
     async def _on_install_success(
-        self, item: DownloadItem, result: InstallResult, store: StoreBase, key: str,
+        self,
+        item: DownloadItem,
+        result: InstallResult,
+        store: StoreBase,
+        key: str,
     ) -> None:
         """Mark complete, emit DOWNLOAD_COMPLETE, run the post-install hook."""
         from unifideck.core.types.events import Events
+
         item.progress = 100.0
         result_install_path = getattr(result, "install_path", None)
         if result_install_path:
@@ -306,10 +328,14 @@ class _WorkerMixin:
         # the shortcut. We do NOT emit GAME_INSTALLED here — ArtworkService
         # fetches cover art during the post-install sync pass and
         # re-emitting causes duplicate SteamGridDB lookups.
-        game = await self._build_installed_game(item, result, store)
+        game = await build_installed_game(
+            item, result, store, getattr(self, "_launcher_path", ""),
+        )
         if self._bus:
             await self._bus.emit(
-                Events.DOWNLOAD_COMPLETE, item=item.to_dict(), game=game,
+                Events.DOWNLOAD_COMPLETE,
+                item=item.to_dict(),
+                game=game,
             )
         on_complete = getattr(self, "_on_complete_callback", None)
         if callable(on_complete):
@@ -341,19 +367,22 @@ class _WorkerMixin:
             logger.info(
                 "[DownloadWorker] skipping prefix warmup for %s:%s — "
                 "Linux-native GOG depot (start.sh), no Proton prefix needed",
-                item.store, item.game_id,
+                item.store,
+                item.game_id,
             )
             return
         hook: Any = getattr(self, "_prefix_warmup", None)
         if not callable(hook):
             return
         from unifideck.core.types.events import Events
+
         item.download_phase = "preparing"
         if self._bus:
             await self._bus.emit(Events.DOWNLOAD_STARTED, item=item.to_dict())
         logger.info(
             "[DownloadWorker] running prefix warmup for %s:%s",
-            item.store, item.game_id,
+            item.store,
+            item.game_id,
         )
         try:
             await asyncio.wait_for(hook(item), timeout=_PREFIX_WARMUP_TIMEOUT_SEC)
@@ -361,17 +390,21 @@ class _WorkerMixin:
             logger.warning(
                 "[DownloadWorker] prefix warmup timed out for %s:%s after %ds — "
                 "completing install; the prefix is set up at launch instead",
-                item.store, item.game_id, int(_PREFIX_WARMUP_TIMEOUT_SEC),
+                item.store,
+                item.game_id,
+                int(_PREFIX_WARMUP_TIMEOUT_SEC),
             )
         except Exception:
             logger.exception(
                 "[DownloadWorker] prefix warmup failed for %s:%s (continuing)",
-                item.store, item.game_id,
+                item.store,
+                item.game_id,
             )
 
     async def _mark_cancelled(self, item: DownloadItem, key: str) -> None:
         """Mark the item cancelled and emit DOWNLOAD_CANCELLED."""
         from unifideck.core.types.events import Events
+
         item.status = "cancelled"
         item.end_time = time.time()
         logger.info("[DownloadWorker] cancelled install for %s", key)
@@ -381,6 +414,7 @@ class _WorkerMixin:
     async def _emit_failure(self, item: DownloadItem, error: Any, key: str) -> None:
         """Mark the item failed, classify the error, emit DOWNLOAD_FAILED."""
         from unifideck.core.types.events import Events
+
         item.status = "failed"
         item.error = str(error or "")
         item.end_time = time.time()
@@ -401,6 +435,13 @@ class _WorkerMixin:
         Also appends to ``self._finished`` (capped) so the
         Downloads page shows a history entry after a successful
         completion (or failure / cancel).
+
+        History is keyed on the item id, one row per game. Retrying an
+        install used to leave a row per attempt, so a game the user had
+        tried twice rendered as two identical cards under "Failed" —
+        indistinguishable from two different problems. The newest
+        outcome is the only one that describes the game's current state,
+        so it replaces the older one rather than stacking on top of it.
         """
         key = f"{item.store}:{item.game_id}"
         self._running.pop(key, None)
@@ -409,6 +450,12 @@ class _WorkerMixin:
             running_tasks.pop(key, None)
         finished = getattr(self, "_finished", None)
         if isinstance(finished, list):
+            # ``key`` is exactly the ``id`` that ``to_dict`` synthesises and
+            # the frontend keys its rows on.
+            for i in range(len(finished) - 1, -1, -1):
+                prev = finished[i]
+                if f"{prev.store}:{prev.game_id}" == key:
+                    del finished[i]
             finished.append(item)
             # Cap the in-memory history (FIFO). Matches what we persist
             # + show in the QAM "Recently finished" list.
@@ -421,83 +468,6 @@ class _WorkerMixin:
             save_history = getattr(self, "_save_history", None)
             if callable(save_history):
                 track_task(asyncio.create_task(save_history()))
-
-    async def _build_installed_game(
-        self,
-        item: DownloadItem,
-        result: InstallResult,
-        store: StoreBase,
-    ) -> Game | None:
-        """Compose a Game record for a freshly-installed item.
-
-        The Game is consumed by ``ShortcutService._on_download_complete``
-        (which writes the entry into ``shortcuts.vdf`` + ``games.map``)
-        and by ``ArtworkService._on_game_installed`` (which fetches
-        cover art). Returns ``None`` if we can't even derive an
-        install path — the listeners then no-op safely.
-        """
-        install_path = item.install_path or getattr(result, "install_path", None)
-        if not install_path:
-            logger.warning(
-                "[DownloadWorker] cannot build Game for %s:%s — no install_path",
-                item.store, item.game_id,
-            )
-            return None
-
-        # Resolve exe via store-specific resolver if available, else
-        # fall back to the cross-store ``StoreBase._find_exe`` heuristic.
-        exe_path: str | None = None
-        try:
-            specific = getattr(store, "find_installed_exe", None)
-            if callable(specific):
-                # Pass game_id too — store-specific resolvers (Epic's
-                # legendary-manifest ``launch_exe`` lookup) need it; the
-                # generic ones accept it as an ignored optional arg.
-                maybe: Any = specific(install_path, item.game_id)
-                if asyncio.iscoroutine(maybe):
-                    maybe = await maybe
-                exe_path = maybe if isinstance(maybe, str) else None
-            elif hasattr(store, "_find_exe"):
-                raw: Any = store._find_exe(install_path)
-                exe_path = raw if isinstance(raw, str) else None
-        except Exception:
-            logger.exception(
-                "[DownloadWorker] exe resolution failed for %s — leaving null",
-                install_path,
-            )
-
-        # Title fallback: stored on item; if missing, derive from
-        # the install folder name so the shortcut tile reads sensibly.
-        title = item.title or Path(install_path).name or item.game_id
-
-        # Determine size (cheap: InstallResult carries it; fall back
-        # to a directory walk only if missing — bounded by install dir).
-        size_bytes = int(getattr(result, "size_bytes", 0) or 0)
-
-        # Compute the real launcher-anchored app_id so the frontend's
-        # DOWNLOAD_COMPLETE handler can invalidate the right cache entry.
-        # Uses the same (launcher, store:game_id) formula as
-        # SyncService._populate_app_ids — no drift possible.
-        from unifideck.services.shortcut.games_map import generate_app_id
-
-        launcher_path = getattr(self, "_launcher_path", "")
-        if launcher_path:
-            computed_app_id = generate_app_id(
-                launcher_path, f"{item.store}:{item.game_id}",
-            )
-        else:
-            computed_app_id = 0
-
-        return Game(
-            app_id=computed_app_id,
-            store=item.store,
-            store_game_id=item.game_id,
-            title=title,
-            installed=True,
-            install_path=install_path,
-            exe_path=exe_path,
-            size_bytes=size_bytes,
-        )
 
     async def _update_progress(self, item: DownloadItem, progress: Any) -> None:
         """Progress callback invoked from the store's ``install_game``.
@@ -516,6 +486,7 @@ class _WorkerMixin:
             apply_dict_progress(item, progress)
         if self._bus:
             from unifideck.core.types.events import Events
+
             await self._bus.emit(
                 Events.DOWNLOAD_PROGRESS,
                 store=item.store,

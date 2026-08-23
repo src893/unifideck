@@ -120,6 +120,14 @@ jobs:
       - name: vulture (hard gate)
         run: vulture py_modules/unifideck vulture_whitelist.py
 
+      # Every unguarded config.get("key") must be registered in
+      # key_presence.RUNTIME_REQUIRED_KEYS, otherwise the boot-time
+      # assert_all_keys_resolve check cannot see it and the read
+      # silently returns None. A read that carries its own default
+      # is an optional override and is skipped.
+      - name: check_config_keys (hard gate)
+        run: python3 scripts/check_config_keys.py
+
   frontend-quality:
     name: Frontend (tsc)
     runs-on: ubuntu-latest

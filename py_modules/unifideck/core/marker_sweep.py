@@ -6,7 +6,8 @@ Every Unifideck install drops an *ownership marker* in the game folder:
 
 * ``.unifideck-id``            — GOG (carries ``game_id``);
 * ``.unifideck_manifest.json`` — Epic / Amazon (carries ``store`` +
-  ``store_id``).
+  ``store_id``);
+* ``.unifideck_ubisoft``       — Ubisoft (carries ``space_id``).
 
 The marker is definitive proof Unifideck created the directory, which lets
 cleanup reliably remove games installed to *any* location — including custom
@@ -37,6 +38,14 @@ logger = logging.getLogger(__name__)
 
 _GOG_MARKER = ".unifideck-id"
 _MANIFEST_MARKER = ".unifideck_manifest.json"
+# Ubisoft's install marker, written by ``stores/ubisoft/library/
+# detection_helpers.py`` (``write_install_marker`` / ``write_marker_sync``).
+# Ubisoft games usually live *inside* their prefix, which cleanup removes
+# separately — and ``collect_install_roots`` deliberately drops any root
+# under ``prefixes/``. This covers the other case: a standalone install dir,
+# including a sibling orphan under a root ``games.map`` already knows.
+_UBISOFT_MARKER = ".unifideck_ubisoft"
+_ALL_MARKERS = (_GOG_MARKER, _MANIFEST_MARKER, _UBISOFT_MARKER)
 # Library roots hold each game one level down (``<root>/<Game>/<marker>``),
 # so a depth-1 glob is enough and stays bounded (no deep recursion into
 # multi-GB game trees).
@@ -117,6 +126,11 @@ def _parse_marker(marker: Path) -> tuple[str, str] | None:
     if marker.name == _GOG_MARKER:
         gid = data.get("game_id") or data.get("gameId")
         return ("gog", str(gid)) if gid else None
+    if marker.name == _UBISOFT_MARKER:
+        # ``space_id`` is Ubisoft's game id; the marker also carries
+        # ``install_path`` / ``game_title`` / ``executable``, unused here.
+        space_id = data.get("space_id")
+        return ("ubisoft", str(space_id)) if space_id else None
     store, gid = data.get("store"), data.get("store_id")
     return (str(store), str(gid)) if store and gid else None
 
@@ -127,7 +141,7 @@ def iter_marked_dirs(
     """Yield ``(dir, store, game_id)`` for each marked dir under *roots*."""
     seen: set[Path] = set()
     for root in roots:
-        for marker_name in (_GOG_MARKER, _MANIFEST_MARKER):
+        for marker_name in _ALL_MARKERS:
             for marker in root.glob(f"*/{marker_name}"):
                 game_dir = marker.parent
                 if game_dir in seen:

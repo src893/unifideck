@@ -13,6 +13,13 @@ losers so the caller can drop them. The "richest" entry wins so we
 keep the one with playtime + artwork + tags rather than the bare
 clone Steam just made.
 
+**Only Unifideck-managed entries are ever considered.** The user's own
+shortcuts routinely share a launch-options string with each other —
+several ROMs behind one emulator launcher, two tiles for the same game
+with different Proton args — and de-duplicating those would delete
+games we do not own. Grouping every entry in the file was the same
+mistake UD-006 fixed in the reconcile sweep, still live in this path.
+
 Scoring weights mirror staging's ``_deduplicate_shortcuts_data``:
 
 * ``LastPlayTime`` (2)         — irreplaceable history.
@@ -97,20 +104,29 @@ def _appname_matches_exe(exe: Any, appname: Any) -> bool:
 
 def find_duplicate_losers(
     shortcuts_dict: dict[str, Any],
+    launcher_path: str = "",
 ) -> list[str]:
-    """Group by launch-options and return the keys of the losers.
+    """Group *our* shortcuts by launch-options and return the losers' keys.
 
     Caller deletes the returned keys from ``shortcuts_dict`` to
     persist the winners only. Empty / missing launch-options group
     is treated as ungrouped (each entry is its own group, never
     deduped).
 
+    Entries whose ``Exe`` is not our launcher are skipped outright:
+    two of the user's own shortcuts sharing a launch-options string is
+    normal, not a duplicate to resolve. ``launcher_path`` is threaded
+    from the service so a renamed launcher stays recognisable; the
+    basename set in ``orphan_scan`` covers the default install.
+
     Returns:
         List of dict keys to remove. Caller should ``pop`` them.
     """
+    from .write_guard import is_ours
+
     by_key: dict[str, list[tuple[str, int]]] = {}
     for k, entry in shortcuts_dict.items():
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or not is_ours(entry, launcher_path):
             continue
         canonical = _normalize_launch_options(
             entry.get("LaunchOptions") or entry.get("launchoptions"),

@@ -1,11 +1,19 @@
 """support_bundle/probe_storage.py — Every disk, and who can see it.
 
-"My SD card / external drive is not detected" has a known root cause in
-this codebase: FUSE filesystems mount with ``allow_other`` off, so a
-mount owned by the desktop user is invisible to a process running with
-a different effective uid. Until now that was undiagnosable from a log
-file, because nothing recorded what the kernel could see versus what
-the plugin could see.
+"My SD card / external drive is not detected" has more than one root
+cause, which is exactly why this module exists — nothing else records
+what the kernel could see versus what the plugin could see. The three
+seen in the wild so far:
+
+1. a space in the filesystem label. udisks2 mounts the drive at
+   ``/run/media/<user>/External SSD`` and the kernel escapes that in
+   ``/proc/mounts`` as ``External\\040SSD``; the scanner did not decode
+   it and dropped the mount as a nonexistent path.
+2. FUSE filesystems mounted with ``allow_other`` off, invisible to any
+   process whose effective uid differs from the mounting user's.
+3. a mount root the desktop user cannot write to — visible to the
+   scanner, but refused by the install picker's writability gate. Hence
+   ``offered_in_picker``: visible and selectable are different answers.
 
 That comparison is the point of this module. Every device is listed
 twice: once as the kernel reports it, once as the plugin's own mount
@@ -26,6 +34,8 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
+
+from unifideck.utils.mount_naming import unescape_mount_field
 
 logger = logging.getLogger(__name__)
 
@@ -194,15 +204,24 @@ def _read_str(path: Path) -> str:
 def _plugin_view() -> tuple[dict[str, Any], str]:
     """Mount points the plugin's own scanner can see.
 
-    This is the second half of the comparison. Uses the same entry
-    point the storage picker uses, so a device missing here is a device
-    the user cannot install to.
+    This is the second half of the comparison, and it records BOTH
+    scanner variants. The lenient one (``require_writable=False``)
+    answers "can we see the device at all"; the strict one is what
+    ``get_storage_locations``/``get_browseable_devices`` actually call,
+    so ``in_picker`` is the only field that answers the user's real
+    question — whether the drive is selectable. Reporting the lenient
+    view alone once let a bundle read as healthy for a drive the picker
+    was silently dropping as unwritable.
     """
     try:
         from unifideck.utils.mounts import scan_mounts, stat_dev
 
         home_dev = stat_dev(str(Path.home()))
         mounts = scan_mounts(home_dev, require_writable=False)
+        in_picker = {
+            mount.mount_point
+            for mount in scan_mounts(home_dev, require_writable=True)
+        }
     except Exception as err:
         logger.debug("[support_bundle] scan_mounts failed: %s", err)
         return {}, f"scan failed: {err!r}"
@@ -211,6 +230,7 @@ def _plugin_view() -> tuple[dict[str, Any], str]:
             "device": mount.device,
             "fstype": mount.fstype,
             "writable": mount.writable,
+            "in_picker": mount.mount_point in in_picker,
             "effective_uid": mount.effective_uid,
             "options": mount.options,
         }
@@ -237,6 +257,9 @@ def _device_record(
     mountpoint = _primary_mountpoint(points)
     fstype = str(node.get("fstype") or "")
     visible = any(point in view for point in points)
+    selectable = any(
+        bool(view.get(point, {}).get("in_picker")) for point in points
+    )
     return {
         "all_mountpoints": points,
         "name": node.get("name", ""),
@@ -254,16 +277,29 @@ def _device_record(
         "mounted_at": mountpoint,
         "free_bytes": _free_bytes(mountpoint),
         "visible_to_plugin": visible,
-        "visibility_note": _visibility_note(mountpoint, fstype, visible),
+        "offered_in_picker": selectable,
+        "visibility_note": _visibility_note(
+            mountpoint, fstype, visible, selectable,
+        ),
     }
 
 
-def _visibility_note(mountpoint: str, fstype: str, visible: bool) -> str:
+def _visibility_note(
+    mountpoint: str, fstype: str, visible: bool, selectable: bool,
+) -> str:
     """Explain a visibility mismatch in one phrase."""
-    if visible:
+    if visible and selectable:
         return ""
     if not mountpoint:
         return "not mounted (never automounted, or no filesystem driver)"
+    if visible:
+        # Seen by the scanner but refused by the picker's writability
+        # gate — a different failure with a different fix (ownership of
+        # the mount root), so never let it read as "not detected".
+        return (
+            "visible to the plugin but NOT writable, so the install "
+            "picker hides it: check ownership of the mount root"
+        )
     if fstype in _FUSE_FSTYPES:
         return "FUSE mount: check allow_other / user_allow_other"
     return "mounted but not reported by the plugin's mount scanner"
@@ -344,7 +380,10 @@ def _fstype_for(target: str) -> str:
         fields = line.split()
         if len(fields) < 3:
             continue
-        point = fields[1].replace("\\040", " ")
+        # Shared decoder — this used to open-code a `\040`-only
+        # replace, the codebase's one partial fix for the escaping the
+        # real scanner ignored entirely.
+        point = unescape_mount_field(fields[1])
         if target.startswith(point) and len(point) > best_len:
             best, best_len = fields[2], len(point)
     return best
@@ -366,6 +405,12 @@ def storage_block(config: Any) -> dict[str, Any]:
         "devices": devices,
         "plugin_view_status": view_status,
         "plugin_view_mount_points": sorted(view),
+        # The subset the install picker actually offers. Compare the two
+        # lists first: equal means any missing drive died in the
+        # scanner, shorter means the writability gate ate it.
+        "plugin_view_picker_mount_points": sorted(
+            point for point, data in view.items() if data.get("in_picker")
+        ),
         "fuse_conf": _fuse_conf(),
         "automount_roots": _automount_roots(),
         "install_locations": _install_locations(config),

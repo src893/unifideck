@@ -396,12 +396,12 @@ def _resolve_bypass_flag(store: str, game_id: str) -> bool:
     )
     try:
         from unifideck.config.config_manager import ConfigManager
+        from unifideck.config.defaults_path import resolve_defaults_config_path
         from unifideck.services.launch_history import LaunchHistoryService
+        # See ``launcher/bootstrap._load_standalone_config``: the nested
+        # ``defaults/`` path does not exist on a Decky CLI build.
         cfg = ConfigManager(
-            str(
-                _resolve_plugin_dir()
-                / "defaults" / "config.json",
-            ),
+            resolve_defaults_config_path(_resolve_plugin_dir()),
         )
         lh = LaunchHistoryService(cfg)
         bypass_flag = lh.consume_bypass(f"{store}:{game_id}")

@@ -106,7 +106,32 @@ class UbisoftBinaryResolver:
         return None
 
     def find_proton_path(self) -> str | None:
-        """Find PROTON path."""
+        """Find PROTON path.
+
+        The plugin-managed GE-Proton first, because a prefix must be *built*
+        by the Proton that will later *run* it. This resolver only ever
+        serves backend-side umu spawns — a vendor client's installer, a
+        prefix warmup — while every launch of that same prefix goes through
+        the launcher's own selector, which picks managed GE. Those two
+        disagreeing is how a Battle.net prefix came to be created by
+        ``Proton - Experimental`` and driven by ``GE-Proton11-5``.
+
+        The disagreement was not a choice anyone made. It came out of
+        :data:`_PROTON_OFFICIAL_NAMES`, a hardcoded display-name table that
+        stopped at Proton 10: on a host with Proton 11.0, GE-Proton11-5,
+        GE-Proton10-34, Proton-CachyOS and EM-10.0-34 installed, the only
+        name it could still match was Experimental. That is the same rot
+        ``vdf_compat.official_proton_alias`` was written to end, and the
+        cached-tag lookup below has no table to go stale.
+
+        Cached-tag only: never ``ensure_latest_ge``. This runs in the
+        backend, where a hundreds-of-MB Proton download would stall an
+        install or a sign-in with nothing on screen to explain it. When no
+        validated tag is on disk the old scan still answers.
+        """
+        managed = self._find_managed_ge_proton()
+        if managed is not None:
+            return managed
         official = self._find_official_proton()
         if official is not None:
             return official
@@ -118,6 +143,30 @@ class UbisoftBinaryResolver:
             "steamapps/common or compatibilitytools.d",
         )
         return None
+
+    @staticmethod
+    def _find_managed_ge_proton() -> str | None:
+        """The GE-Proton the plugin installed and validated, if it is on disk.
+
+        Returns the tool *directory*: ``installed_ge_proton_path`` answers
+        with the ``proton`` script inside it, and ``PROTONPATH`` wants the
+        directory. Getting that wrong hands umu a path it cannot use.
+        """
+        try:
+            from unifideck.launcher.proton.infrastructure import ge_installer
+
+            tag = ge_installer.read_cached_latest_tag()
+            script = ge_installer.installed_ge_proton_path(tag) if tag else None
+        except Exception:
+            logger.debug(
+                "[UbisoftBinaryResolver] managed GE-Proton lookup failed",
+                exc_info=True,
+            )
+            return None
+        if script is None:
+            return None
+        logger.info("[UbisoftBinaryResolver] using Proton: %s (plugin-managed)", tag)
+        return str(script.parent)
 
     @staticmethod
     def _find_official_proton() -> str | None:

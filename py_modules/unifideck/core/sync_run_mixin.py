@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 # Per-store ``get_library`` ceiling. The sync runs stores sequentially,
 # so a single store that hangs (a wedged Wine/UPC catalog parse, a
 # sleeping SD-card mount, a stalled network call) freezes the *whole*

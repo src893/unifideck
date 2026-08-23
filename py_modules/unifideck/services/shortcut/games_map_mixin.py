@@ -96,17 +96,48 @@ class _GamesMapMixin(_ReconcilePhasesMixin):
         )
         return True
 
+    def _forget_registry_rows(self: Any, app_id: int) -> None:
+        """Drop the persistent registry rows for a removed shortcut.
+
+        Nothing pruned the registry before, so a removed game's appid
+        stayed on file forever — and reconcile treats a registry row as
+        licence to reclaim whichever shortcut currently carries that
+        appid. Best-effort: failing to prune costs a stale row, and must
+        not fail the removal that already happened.
+        """
+        from .registry import load_registry, save_registry, unregister
+
+        try:
+            path = self._registry_path
+            registry = load_registry(path)
+            if unregister(registry, app_id):
+                save_registry(registry, path)
+        except Exception:
+            logger.exception(
+                "[ShortcutService] could not prune registry rows for %s",
+                app_id,
+            )
+
     @staticmethod
     def _drop_shortcut_entries(
         shortcuts: Any,
         app_id: int,
+        launcher_path: str = "",
     ) -> bool:
-        """Delete every ``shortcuts.vdf`` entry matching ``app_id``.
+        """Delete every *Unifideck-owned* entry matching ``app_id``.
 
         Tolerates corrupt VDF (non-dict at root or under
         ``"shortcuts"``) by treating those branches as "no match".
         Returns True if at least one entry was deleted.
+
+        The ownership gate is load-bearing, not defensive: non-Steam
+        app_ids are a 2**31 space that Steam, NonSteamLaunchers, Heroic
+        and we all draw from, so a collision is a live possibility on a
+        busy library — and an app_id match alone would delete whichever
+        of the user's own shortcuts happened to land on the same value.
         """
+        from .write_guard import is_ours
+
         if not isinstance(shortcuts, dict) or "shortcuts" not in shortcuts:
             return False
         shortcuts_dict = shortcuts["shortcuts"]
@@ -114,7 +145,9 @@ class _GamesMapMixin(_ReconcilePhasesMixin):
             return False
         keys_to_delete = [
             key for key, entry in shortcuts_dict.items()
-            if isinstance(entry, dict) and entry.get("appid") == app_id
+            if isinstance(entry, dict)
+            and entry.get("appid") == app_id
+            and is_ours(entry, launcher_path)
         ]
         for key in keys_to_delete:
             del shortcuts_dict[key]
@@ -242,6 +275,7 @@ class _GamesMapMixin(_ReconcilePhasesMixin):
             return None
         existing_app_id: int | None = _GamesMapMixin._flip_install_tag(
             shortcuts_root, target_launch, installed=True,
+            launcher_path=getattr(self, "_launcher_path", "") or "",
         )
         if existing_app_id is None:
             logger.warning(
@@ -279,14 +313,24 @@ class _GamesMapMixin(_ReconcilePhasesMixin):
         target_launch: str,
         *,
         installed: bool,
+        launcher_path: str = "",
     ) -> int | None:
-        """Find the shortcut by LaunchOptions and flip ``tags["2"]``.
+        """Find *our* shortcut by LaunchOptions and flip ``tags["2"]``.
 
         Returns the entry's ``appid``, or None if no match.
+
+        The ``get_full_id`` compare is deliberately canonical rather
+        than exact — it has to keep matching after the user appends
+        their own params (``MANGOHUD=1``, a ``%command%`` wrapper).
+        That tolerance is also why a foreign shortcut carrying one of
+        our tokens matches, so ownership is settled by the ``Exe`` gate
+        instead of by tightening the string compare.
         """
+        from .write_guard import is_ours
+
         marker = "" if installed else "Not Installed"
         for entry in shortcuts_root.values():
-            if not isinstance(entry, dict):
+            if not isinstance(entry, dict) or not is_ours(entry, launcher_path):
                 continue
             launch = entry.get("LaunchOptions", "")
             if not isinstance(launch, str):
@@ -336,6 +380,7 @@ class _GamesMapMixin(_ReconcilePhasesMixin):
 
         existing_app_id: int | None = _GamesMapMixin._flip_install_tag(
             shortcuts_root, target_launch, installed=False,
+            launcher_path=getattr(self, "_launcher_path", "") or "",
         )
         if existing_app_id is None:
             logger.warning(
@@ -375,11 +420,15 @@ class _GamesMapMixin(_ReconcilePhasesMixin):
         await self._load_shortcuts()
         await self._load_games_map()
 
-        dropped_vdf = self._drop_shortcut_entries(self._shortcuts, app_id)
+        launcher = getattr(self, "_launcher_path", "") or ""
+        dropped_vdf = self._drop_shortcut_entries(
+            self._shortcuts, app_id, launcher,
+        )
         dropped_map = self._drop_games_map_entries(app_id)
         removed = dropped_vdf or dropped_map
 
         if removed:
+            self._forget_registry_rows(app_id)
             await self._save_all()
             if self._bus:
                 from unifideck.core.types.events import Events
@@ -401,10 +450,18 @@ class _GamesMapMixin(_ReconcilePhasesMixin):
         party, or the wrapper key missing) by re-establishing the
         canonical shape and returning the inner dict that the rest
         of ``reconcile`` mutates.
+
+        Note what this does *not* do: substitute an empty dict for a
+        ``"shortcuts"`` value of the wrong type. Doing that silently
+        discarded a whole library on the next write, and the merge
+        could not recover it because it reads the same malformed
+        structure. A wrong-typed root is now rejected upstream by
+        :func:`vdf_read.read_vdf_checked`, which marks the file
+        UNREADABLE so no write is attempted at all.
         """
         if not isinstance(shortcuts, dict):
             shortcuts = {"shortcuts": {}}
-        elif "shortcuts" not in shortcuts:
+        elif not isinstance(shortcuts.get("shortcuts"), dict):
             shortcuts["shortcuts"] = {}
         # cast: ``shortcuts`` is ``Any`` on entry; after the two
         # branches above it's guaranteed to be a ``dict[str, Any]``
@@ -416,16 +473,28 @@ class _GamesMapMixin(_ReconcilePhasesMixin):
     def _find_existing_shortcut_key(
         shortcuts_dict: dict[str, Any],
         app_id: int,
+        launcher_path: str = "",
     ) -> str | None:
-        """Find the existing ``shortcuts.vdf`` key for a given app_id.
+        """Find *our* existing ``shortcuts.vdf`` key for a given app_id.
 
         Steam keys shortcuts by an opaque ordinal string ("0", "1",
         ...); the canonical identifier is ``appid``. Returns the
         ordinal of the entry matching ``app_id``, or ``None`` if
         no entry exists yet (caller will allocate a fresh ordinal).
+
+        Foreign entries are never returned. Both callers hand the
+        result to a rewrite — ``_reclaim_orphan`` replaces the AppName,
+        Exe, LaunchOptions, icon *and tags* wholesale — so returning a
+        shortcut we do not own converts one of the user's games into one
+        of ours. That conversion tallies as ``reclaimed``, never as
+        ``removed``, which is why it could happen invisibly.
         """
+        from .write_guard import is_ours
+
         for vdf_key, entry in shortcuts_dict.items():
-            if isinstance(entry, dict) and entry.get("appid") == app_id:
+            if not isinstance(entry, dict) or entry.get("appid") != app_id:
+                continue
+            if is_ours(entry, launcher_path):
                 return vdf_key
         return None
 

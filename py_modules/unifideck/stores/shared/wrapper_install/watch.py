@@ -63,6 +63,16 @@ POLL_INTERVAL_S = 10.0
 
 # Completion-by-stability, for stores with no authoritative signal: three
 # consecutive unchanged non-zero size reads.
+#
+# ``STABILITY_MAX_POLLS`` is only the *fallback* budget for the download wait.
+# It used to be the whole budget, and it silently contradicted the per-store
+# timeout: 360 polls at Battle.net's 15 second interval is 90 minutes, against
+# the 4 hours its probe declares. The clock starts when ``detect()`` first sees
+# the install directory, and a vendor client creates that when it *accepts* the
+# job rather than when bytes start landing, so a long queue wait plus a large
+# download ran past 90 minutes and a healthy install was reported as failed.
+# The budget now derives from the probe's own timeout; this constant applies
+# only to a probe that declares neither.
 STABILITY_MAX_POLLS = 360
 STABILITY_THRESHOLD = 3
 
@@ -124,6 +134,14 @@ class _Watch:
         self._never_grace = float(
             getattr(probe, "never_started_grace_s", NEVER_STARTED_GRACE_S),
         )
+        # How many polls the download wait may take. Derived from the same
+        # timeout the appear loop uses, so a store cannot declare 4 hours and
+        # silently get 90 minutes. Never shorter than the old fixed budget: a
+        # store with a short timeout should not lose download headroom it
+        # already had.
+        self._completion_polls = max(
+            int(self._timeout / self._poll), STABILITY_MAX_POLLS,
+        )
         self._seen = False
         self._gone_for = 0.0
         self._absent_for = 0.0
@@ -133,6 +151,27 @@ class _Watch:
         if self._progress_cb is None:
             return
         await self._progress_cb({"phase": "manual", "phase_message": message})
+
+    def _explained_wait(self) -> str | None:
+        """The store's own account of why nothing is moving, if it has one.
+
+        Optional per store. See the note in :mod:`.probe` on why this is read
+        with ``getattr`` rather than declared on the protocol. Any failure is
+        swallowed: a progress *message* must never be able to end an install.
+        """
+        describe: Callable[[], str | None] | None = getattr(
+            self._probe, "status_message", None,
+        )
+        if describe is None:
+            return None
+        try:
+            message = describe()
+            return message if isinstance(message, str) and message else None
+        except Exception:
+            logger.debug(
+                "[%s] status_message failed", self._probe.store, exc_info=True,
+            )
+            return None
 
     def _abandoned(self) -> bool:
         """Run both give-up watchdogs for one poll.
@@ -155,7 +194,9 @@ class _Watch:
             return False
         logger.info(
             "[%s] %s gone for ~%.0fs — treating the install as abandoned",
-            self._probe.store, self._probe.client_label, self._gone_for,
+            self._probe.store,
+            self._probe.client_label,
+            self._gone_for,
         )
         return True
 
@@ -169,12 +210,15 @@ class _Watch:
             "was waiting for a window that will never appear — check the "
             "launcher log for this game; a failed RunGame (e.g. the title "
             "missing from games.map) leaves exactly this state.",
-            self._probe.store, self._probe.client_label, int(self._absent_for),
+            self._probe.store,
+            self._probe.client_label,
+            int(self._absent_for),
         )
         return True
 
     async def start(
-        self, on_ready: Callable[[], Awaitable[None]] | None,
+        self,
+        on_ready: Callable[[], Awaitable[None]] | None,
     ) -> str | None:
         """Snapshot, ask the frontend to open the client, then watch.
 
@@ -184,12 +228,12 @@ class _Watch:
         """
         baseline = self._probe.snapshot()
         await self._emit(
-            f"{self._probe.client_label} is opening — install the game "
-            f"from its window.",
+            f"{self._probe.client_label} is opening — install the game from its window.",
         )
         logger.info(
             "[%s] awaiting %s launch via frontend RunGame",
-            self._probe.store, self._probe.client_label,
+            self._probe.store,
+            self._probe.client_label,
         )
         if on_ready is not None:
             await on_ready()
@@ -203,53 +247,85 @@ class _Watch:
             install_dir = self._probe.detect(baseline)
             if install_dir:
                 logger.info(
-                    "[%s] detected install at %s", self._probe.store, install_dir,
+                    "[%s] detected install at %s",
+                    self._probe.store,
+                    install_dir,
                 )
                 await self._emit(
-                    f"Installing {Path(install_dir).name} via "
-                    f"{self._probe.client_label}…",
+                    f"Installing {Path(install_dir).name} via {self._probe.client_label}…",
                 )
-                await self._await_completion(install_dir)
+                if not await self._await_completion(install_dir):
+                    return None
                 return install_dir
             if self._abandoned():
                 return None
             if iteration % TICK_EVERY_POLLS == 0:
                 await self._emit(
-                    f"Waiting for the game to install in "
-                    f"{self._probe.client_label}…",
+                    self._explained_wait()
+                    or f"Waiting for the game to install in "
+                       f"{self._probe.client_label}…",
                 )
         logger.warning(
             "[%s] manual install timed out after %.1fh",
-            self._probe.store, self._timeout / 3600,
+            self._probe.store,
+            self._timeout / 3600,
         )
         return None
 
-    async def _await_completion(self, install_dir: str) -> None:
-        """Block until the install finishes.
+    async def _await_completion(self, install_dir: str) -> bool:
+        """Block until the install finishes. True only when it actually did.
 
         The store's own verdict wins whenever it has one — including a
         ``False`` verdict, which keeps the size heuristic from ending a
         download that has merely paused.
+
+        Running out of polls is a **failure**, not a completion. This
+        returned ``None`` unconditionally, so the caller took "the loop
+        ended" as "the game is installed" and recorded a game that had
+        never finished downloading — a Play button on an install the
+        vendor client had left part-written. A store that cannot say yes
+        must not be reported as yes.
         """
         prev_size = 0
         stable = 0
-        for _ in range(STABILITY_MAX_POLLS):
+        for _ in range(self._completion_polls):
             await asyncio.sleep(self._poll)
             verdict = self._probe.is_complete(install_dir)
             if verdict is True:
                 logger.info(
                     "[%s] %s reports the install complete",
-                    self._probe.store, self._probe.client_label,
+                    self._probe.store,
+                    self._probe.client_label,
                 )
-                return
+                return True
             size = self._probe.measure(install_dir)
             if verdict is None:
                 stable = stable + 1 if size == prev_size and size > 0 else 0
                 if stable >= STABILITY_THRESHOLD:
-                    return
+                    return True
             prev_size = size
-            if size > 0:
+            # The explained wait wins over the byte count here, not just in
+            # the appear loop. A vendor client creates the install directory
+            # when it *accepts* the job, not when it starts writing, so a game
+            # queued behind the client's own self-update sits at a few KB for
+            # as long as that takes, and "Installing… (0.0 GB)" is a worse
+            # answer than silence, let alone than naming what is in front of
+            # it. Measured: 28 minutes of exactly this.
+            explained = self._explained_wait()
+            if explained:
+                await self._emit(explained)
+            elif size > 0:
                 await self._emit(f"Installing… ({size / (1024**3):.1f} GB)")
+        logger.warning(
+            "[%s] %s never reported this install complete after %d polls "
+            "(~%.1fh). The files are on disk but part-written, so this is "
+            "reported as a failure rather than recorded as installed.",
+            self._probe.store,
+            self._probe.client_label,
+            self._completion_polls,
+            self._completion_polls * self._poll / 3600,
+        )
+        return False
 
 
 async def watch_manual_install(

@@ -28,8 +28,10 @@ _FIELD_SPECS: dict[str, tuple[str, Any]] = {
     "prefixes_dir": ("prefixes_dir", "~/.local/share/unifideck/prefixes/battlenet"),
     "installer_url": (
         "installer_url",
-        "https://www.battle.net/download/getInstallerForGame"
-        "?os=win&version=LIVE&gameProgram=BATTLENET_APP",
+        (
+            "https://www.battle.net/download/getInstallerForGame"
+            "?os=win&version=LIVE&gameProgram=BATTLENET_APP"
+        ),
     ),
     "installer_filename": ("installer_filename", "Battle.net-Setup.exe"),
     "installer_cache_dir": (

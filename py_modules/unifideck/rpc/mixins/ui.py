@@ -12,6 +12,7 @@ from typing import Any
 
 from unifideck.rpc.errors import RpcError
 from unifideck.rpc.mixins import _metadata_display as _mdisp
+from unifideck.utils.device import detect_device_type
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +166,16 @@ class UIRPCMixin:
         """Persist the UI locale via config."""
         self.config.set("ui.locale", locale)
         return {"success": True, "locale": locale}
+
+    async def get_device_type(self) -> Any:
+        """Return the hardware class the UI should label itself after.
+
+        ``device_type`` is ``"deck"``, ``"machine"`` or ``"other"``.
+        Read fresh rather than cached: it costs two ``/sys`` reads and
+        caching it would only add a staleness mode to a value that
+        cannot change without a reboot anyway.
+        """
+        return {"success": True, "device_type": detect_device_type().value}
 
     async def list_directory(
         self,

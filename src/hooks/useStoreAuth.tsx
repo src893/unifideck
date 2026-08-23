@@ -22,6 +22,7 @@ import { useStores } from "../contexts/StoreContext";
 import { useToast } from "./useToast";
 import { AuthDispatcher } from "../services/auth/AuthDispatcher";
 import { ChromiumInstallModal } from "../components/modals/ChromiumInstallModal";
+import { STORE_VISUALS } from "../types/store";
 import type { AuthResult, StoreId } from "../types/api";
 
 /**
@@ -69,11 +70,15 @@ export function useStoreAuth(store: StoreId): UseStoreAuthResult {
   const [busy, setBusy] = useState(false);
   const info = stores.find((s) => s.name === store) ?? null;
   const status = auth.statuses[store];
+  // Brand name, not a translatable word — interpolated into the localized
+  // sentence. Reads the same source of truth as every other store label so
+  // the toast says "Epic Games", not the internal id "epic".
+  const storeName = STORE_VISUALS[store]?.display_name ?? store;
 
   const connect = useCallback(async (): Promise<AuthResult | null> => {
     setBusy(true);
     try {
-      toast.info(`Starting ${store} sign-in…`);
+      toast.info(t("auth.toasts.signingIn", { store: storeName }));
       const result = await AuthDispatcher.start(store);
       // Browser-based OAuth needs Microsoft Edge. When the
       // backend reports the prereq is missing, surface a
@@ -93,24 +98,27 @@ export function useStoreAuth(store: StoreId): UseStoreAuthResult {
       }
       if (result.success) {
         auth.notifyConnected(store);
-        toast.success(`${store} connected`);
+        toast.success(t("auth.toasts.connected", { store: storeName }));
       } else if (result.error && NETWORK_ERROR_CODES.has(result.error)) {
         toast.error(
           t("auth.errors.networkTitle"),
           t("auth.errors.networkBody"),
         );
       } else {
-        toast.error(`${store} sign-in failed`, result.error);
+        toast.error(
+          t("auth.toasts.failed", { store: storeName }),
+          result.error,
+        );
       }
       return result;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      toast.error(`${store} sign-in failed`, message);
+      toast.error(t("auth.toasts.failed", { store: storeName }), message);
       return { success: false, store, error: message };
     } finally {
       setBusy(false);
     }
-  }, [store, toast, auth, t]);
+  }, [store, storeName, toast, auth, t]);
 
   const disconnect = useCallback(async () => {
     setBusy(true);

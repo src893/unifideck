@@ -96,7 +96,7 @@ class WrapperSessionHooks:
         return wrapper_session.capture(spec, source, auth, auth_busy=busy)
 
     def publish_session_prefixes(
-        self, template: Path, *, locale: str | None = None,
+        self, template: Path,
     ) -> None:
         """Tell the launcher where this store's shared prefixes live.
 
@@ -105,8 +105,9 @@ class WrapperSessionHooks:
         — so a path it is never told is a path it can never use. Same reason
         Battle.net writes its family codes to its id map.
 
-        ``locale`` is the plugin's BCP-47 UI locale, written so the launcher
-        can seed the vendor client's language from it on the first launch.
+        Paths only: the launcher resolves the UI locale itself through
+        ``utils.locale.get_unifideck_locale``, which is the single source of
+        truth for it. See ``wrapper_session.write_prefix_index``.
         """
         if not self.session_store_id:
             return
@@ -115,7 +116,6 @@ class WrapperSessionHooks:
                 self.session_store_id,
                 auth=self.session_auth_prefix(),
                 template=template,
-                locale=locale,
             )
         except Exception:
             logger.warning(

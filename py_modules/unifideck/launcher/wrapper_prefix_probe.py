@@ -46,6 +46,11 @@ class _ProbeSpec:
     id_map: str
     #: Client executable, relative to the prefix's ``drive_c``.
     client_rel: str
+    #: Optional second requirement, as a glob against ``drive_c``: at least
+    #: one match must exist. For a store whose ``client_rel`` is a *shim*
+    #: rather than the client, this is what proves the real payload landed.
+    #: ``None`` for a store where the executable is the whole answer.
+    payload_glob: str | None = None
 
 
 _SPECS: dict[str, _ProbeSpec] = {
@@ -53,9 +58,20 @@ _SPECS: dict[str, _ProbeSpec] = {
         id_map="ubisoft_id_map.json",
         client_rel="Program Files (x86)/Ubisoft/Ubisoft Game Launcher/upc.exe",
     ),
+    # Battle.net's ``Battle.net.exe`` is a ~1 MB shim the bootstrapper writes
+    # long before the client it loads has finished downloading, so it alone
+    # proves nothing. An install interrupted in that window produced a prefix
+    # that passed this probe and could not start a client — see
+    # ``handlers/battlenet_client.find_payload_dir``.
+    #
+    # The payload glob matches the client DLL, not an exe: the versioned dir
+    # holds no ``Battle.net.exe`` (the client is ``battle.net.dll``), so a
+    # glob ending in the exe never matched a real install and reported every
+    # working client as missing.
     "battlenet": _ProbeSpec(
         id_map="battlenet_id_map.json",
         client_rel="Program Files (x86)/Battle.net/Battle.net.exe",
+        payload_glob="Program Files (x86)/Battle.net/Battle.net.*/battle.net.dll",
     ),
 }
 
@@ -103,6 +119,9 @@ def wrapper_prefix_is_populated(store: str, game_id: str) -> bool:
     Follow the Ubisoft Connect window" forever — reported from the field
     against Rayman Origins, whose prefix was a custom
     ``~/Games/prefixes/ubisoft/80`` recorded in ``ubisoft_id_map.json``.
+
+    "Client installed" means the store's whole client, not just its entry
+    executable — see :attr:`_ProbeSpec.payload_glob`.
     """
     spec = _SPECS.get(store)
     if spec is None:
@@ -118,10 +137,19 @@ def wrapper_prefix_is_populated(store: str, game_id: str) -> bool:
     candidates.append(_data_dir() / "prefixes" / store / game_id)
     for candidate in candidates:
         drive_c = resolve_drive_c(candidate)
-        if drive_c is not None and (drive_c / spec.client_rel).is_file():
+        if drive_c is not None and _client_is_present(drive_c, spec):
             logger.info(
                 "[%s] %s has a bootstrapped prefix at %s",
                 store, game_id, candidate,
             )
             return True
     return False
+
+
+def _client_is_present(drive_c: Path, spec: _ProbeSpec) -> bool:
+    """Whether ``drive_c`` holds this store's client, entry point and payload."""
+    if not (drive_c / spec.client_rel).is_file():
+        return False
+    if spec.payload_glob is None:
+        return True
+    return any(match.is_file() for match in drive_c.glob(spec.payload_glob))

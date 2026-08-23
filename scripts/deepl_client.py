@@ -65,9 +65,15 @@ def _post(
     source_lang: str,
     api_key: str,
 ) -> str:
-    """POST the translate request and return the raw response body."""
+    """POST the translate request and return the raw response body.
+
+    The key travels in the ``Authorization`` header, not the form
+    body: DeepL removed form-body auth in November 2025 and now
+    answers ``403 Legacy authentication method 'form body' is no
+    longer supported`` to any request carrying ``auth_key`` there.
+    See https://developers.deepl.com/docs/getting-started/auth
+    """
     params: list[tuple[str, str]] = [
-        ("auth_key", api_key),
         ("target_lang", target_lang),
         ("source_lang", source_lang),
         # preserve_formatting keeps {placeholders} intact so
@@ -84,7 +90,10 @@ def _post(
     req = urllib.request.Request(
         endpoint_for(api_key),
         data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": f"DeepL-Auth-Key {api_key}",
+        },
     )
     try:
         with urllib.request.urlopen(  # noqa: S310 — trusted host

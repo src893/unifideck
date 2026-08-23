@@ -122,6 +122,14 @@ def _conflict_blocks(ctx: BundleContext) -> dict[str, Callable[[], Any]]:
         "shortcuts_race": lambda: probe_conflicts.shortcuts_race_block(
             _paths_attr(ctx, "shortcuts_path"),
         ),
+        # Ours-vs-theirs split of shortcuts.vdf plus the backup inventory.
+        # The measurement that makes a "my non-Steam games vanished"
+        # report answerable instead of a guess.
+        "shortcuts_census": lambda: probe_conflicts.shortcuts_census_block(
+            _paths_attr(ctx, "shortcuts_path"),
+            ctx.root("data"),
+            _paths_attr(ctx, "launcher_path"),
+        ),
     }
 
 

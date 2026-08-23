@@ -47,18 +47,12 @@ async def _gog_launch(plan: ProtonLaunchPlan) -> int:
 async def _amazon_launch(plan: ProtonLaunchPlan) -> int:
 
     """Amazon launch."""
-    try:
-        from unifideck.config.config_manager import ConfigManager
-        from unifideck.launcher.proton.language_setup import apply_amazon_language
-        _cfg = ConfigManager(
-            str(plan.context.plugin_dir / "defaults" / "config.json"),
-        )
-        apply_amazon_language(str(plan.prefix_path), config=_cfg)
-    except Exception as err:
-        logger.warning(
-            "[launcher.proton.generic] Amazon language setup failed: %s",
-            err,
-        )
+    # The prefix's Windows locale used to be applied here. It is store-
+    # agnostic, so it moved to ``proton.dispatch`` and now runs for every
+    # store instead of the three that happened to have grown a copy.
+    # Amazon has no game-level language setting of its own — nile takes no
+    # ``--lang`` — so the prefix locale is the whole of it for this store.
+    #
     # Amazon games launch by running the resolved exe directly through
     # umu — matching staging. ``nile launch`` was the wrong port: nile
     # manages its own wine binary + install manifest and exits rc=1

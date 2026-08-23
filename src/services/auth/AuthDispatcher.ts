@@ -41,6 +41,7 @@ import {
 } from "../../utils/authShortcutLaunch";
 import { launchUbisoftAuthViaShortcut } from "../../utils/ubisoftShortcutLaunch";
 import { launchBattlenetAuthViaShortcut } from "../../utils/battlenetShortcutLaunch";
+import { prepareForSync } from "../../lib/steam-bridge/prepare-sync";
 import type { StoreId, AuthResult } from "../../types/api";
 
 const AUTH_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes ceiling
@@ -55,6 +56,35 @@ const DEDUPE_WINDOW_MS = 3000;
  *  flushes its token as it shuts down, so a successful sign-in's
  *  ``STORE_AUTH_COMPLETE`` routinely lands *after* the app has stopped. */
 const AUTH_APP_STOPPED_GRACE_MS = 20 * 1000;
+
+/**
+ * Whether the backend currently considers ``store`` signed in.
+ *
+ * Reuses ``check_store_status`` — the probe behind the stores tab's
+ * badges — rather than adding a second source of truth for the same
+ * question. Any failure answers ``false``: this only ever *rescues* a
+ * flow that was about to be called failed, so an unreachable backend
+ * must leave that verdict alone.
+ */
+async function storeReportsConnected(store: StoreId): Promise<boolean> {
+  try {
+    const raw = await call<[], unknown>(rpcRoutes.checkStoreStatus);
+    const data = unwrapRpcEnvelope<unknown>(raw, {
+      route: rpcRoutes.checkStoreStatus,
+      throwing: false,
+    });
+    if (!Array.isArray(data)) return false;
+    return data.some(
+      (e) =>
+        e &&
+        typeof e === "object" &&
+        (e as Record<string, unknown>).store_id === store &&
+        Boolean((e as Record<string, unknown>).available),
+    );
+  } catch {
+    return false;
+  }
+}
 
 /** Auth event payload. */
 interface AuthEventPayload {
@@ -180,14 +210,23 @@ class AuthDispatcherImpl {
           // restart. Queues behind an in-flight sync on the backend
           // (SyncService._enqueue) rather than blocking this Promise —
           // callers resolve as soon as auth completes, same as before.
-          void call<[StoreId], unknown>(rpcRoutes.requestAuthSync, store).catch(
-            (e) => {
+          //
+          // ``prepareForSync`` first, and awaited inside the chain rather
+          // than skipped: this path used to fire the RPC bare while the
+          // user-triggered syncs in ``SyncContext`` did three preparatory
+          // steps. That gap was the whole difference between a manual sync,
+          // which worked, and the automatic one at login, which did not. See
+          // ``lib/steam-bridge/prepare-sync`` for what each step is for.
+          void prepareForSync()
+            .then(() =>
+              call<[StoreId], unknown>(rpcRoutes.requestAuthSync, store),
+            )
+            .catch((e) => {
               console.error(
                 `[AuthDispatcher:${store}] requestAuthSync failed:`,
                 e,
               );
-            },
-          );
+            });
         }
         resolve(result);
       };
@@ -218,17 +257,36 @@ class AuthDispatcherImpl {
        *  sufficient: any store whose emitter is missing, or whose event
        *  is lost, would otherwise hold this promise — and with it the
        *  button — for the full timeout. The app's own exit is a signal
-       *  we always get, so it is the backstop. */
+       *  we always get, so it is the backstop.
+       *
+       *  The grace expiring is NOT by itself a failure. A wrapper store
+       *  writes its session as the client shuts down, and the backend
+       *  only clears its signed-out marker once the post-capture hook has
+       *  run, so a genuinely successful sign-in can still be mid-flight
+       *  here. Declaring failure on the timer alone reported a completed
+       *  sign-in as failed and sent the user straight back into another
+       *  launch. So ask the backend what it actually thinks first — the
+       *  same probe the stores tab uses — and only fail if it agrees. */
       const onAuthAppStopped = (): void => {
         console.log(
           `[AuthDispatcher:${store}] auth app stopped; waiting ` +
             `${AUTH_APP_STOPPED_GRACE_MS}ms for a verdict`,
         );
         const grace = setTimeout(() => {
-          onResolved({
-            success: false,
-            store,
-            error: "sign-in was closed before it completed",
+          void storeReportsConnected(store).then((connected) => {
+            if (connected) {
+              console.log(
+                `[AuthDispatcher:${store}] no event, but the backend ` +
+                  `reports the store connected; treating as success`,
+              );
+              onResolved({ success: true, store });
+              return;
+            }
+            onResolved({
+              success: false,
+              store,
+              error: "sign-in was closed before it completed",
+            });
           });
         }, AUTH_APP_STOPPED_GRACE_MS);
         cleanup.push(() => clearTimeout(grace));

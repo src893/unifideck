@@ -46,10 +46,20 @@ class _VdfShortcutsMixin:
 
         return dict(self._shortcuts)
 
-    async def write_shortcuts(self: Any, data: dict[str, Any]) -> None:
+    async def write_shortcuts(
+        self: Any,
+        data: dict[str, Any],
+        *,
+        allow_foreign_drops: frozenset[int] = frozenset(),
+    ) -> None:
         """Overwrite the entire shortcuts dictionary and save.
 
-        Used as an escape hatch for direct modifications.
+        Used as an escape hatch for direct modifications. Because this
+        replaces the whole dict, a caller that built ``data`` from a
+        stale or partial read would drop everything missing from it —
+        so the write still goes through ``_save_all``'s guard.
+        ``allow_foreign_drops`` names the appids of any non-Unifideck
+        rows the caller means to remove.
         """
         self._shortcuts = dict(data)
-        await self._save_all()
+        await self._save_all(allow_foreign_drops=allow_foreign_drops)

@@ -26,13 +26,40 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 from unifideck.launcher.frontend_bridge import launcher_toast
+from unifideck.launcher.proton.handlers.battlenet_client import (
+    client_startable,
+    find_client_exe,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from unifideck.launcher.proton.infrastructure.core import ProtonLaunchPlan
+    from unifideck.launcher.types.errors import GameFailedError
     from unifideck.stores.battlenet.prefix.client_install import BootstrapResult
+
+
+class FailFactory(Protocol):
+    """The launch handler's error factory, passed in rather than imported.
+
+    This module toasts *progress* and never verdicts; how a failure is
+    raised — which toast, which exit code, whether the message names a game
+    — belongs to the handler. Taking it as an argument keeps that ownership
+    while letting the install-or-repair decision live next to the install.
+    """
+
+    def __call__(
+        self,
+        plan: ProtonLaunchPlan,
+        key: str,
+        message: str,
+        *,
+        rc: int = ...,
+        titled: bool = ...,
+        **context: object,
+    ) -> GameFailedError: ...
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +79,59 @@ def toast_key_for(result: BootstrapResult | None, fallback: str) -> str:
     return ERROR_TOAST_KEYS.get(code or "", fallback)
 
 
+def install_error(result: BootstrapResult | None, fallback: str) -> str:
+    """The installer's own words for the log, or ``fallback`` if it has none."""
+    return result.error if result is not None and result.error else fallback
+
+
+async def ensure_client(
+    plan: ProtonLaunchPlan,
+    fallback_key: str,
+    *,
+    fail: FailFactory,
+    titled: bool | None = None,
+) -> None:
+    """Install or complete the client in ``plan.prefix_path``, or raise.
+
+    Shared by the launch and the sign-in paths, which had grown the same
+    prologue with the same subtlety in it.
+
+    Repairs an *incomplete* client, not only a missing one. Every game
+    prefix is a clone, so a prefix whose lineage came from an interrupted
+    install carries the ~1 MB shim without the versioned payload it loads.
+    That used to reach phase A, start a launcher with nothing to hand off
+    to, and time out after the full 300 s — for every Battle.net title,
+    with no user action that repaired it. See
+    ``battlenet_client.client_startable``.
+
+    The post-install check is deliberately the *same* full check rather
+    than an exe-only one: an installer that ran and did not finish leaves
+    the shim behind, and an exe-only gate passes that straight through to
+    a client that cannot come up.
+
+    ``fail`` is the caller's error factory — this module toasts progress,
+    never verdicts, and the launch handler owns how a failure is raised.
+    ``titled=False`` for the sign-in path: the auth shortcut is not a game,
+    so ``resolve_title`` finds no registry row and would hand the toast the
+    raw ``battlenet:bnet-auth`` key, which is exactly what a user once read
+    on screen. ``None`` keeps the per-result default.
+    """
+    if client_startable(plan.prefix_path):
+        return
+    install = await install_client(plan)
+    if client_startable(plan.prefix_path):
+        return
+    generic = install is None or install.error_code is None
+    raise fail(
+        plan,
+        toast_key_for(install, fallback_key),
+        install_error(install, "Battle.net client is not installed in this prefix"),
+        rc=127,
+        titled=generic if titled is None else titled,
+        prefix=str(plan.prefix_path),
+    )
+
+
 def _warn_no_32bit_vulkan() -> None:
     """Fired before an install on a host proven to lack 32-bit Vulkan.
 
@@ -65,18 +145,43 @@ def _warn_no_32bit_vulkan() -> None:
     )
 
 
+def _announce_install(prefix: Path) -> None:
+    """Log and toast what is about to happen: a fresh install, or a repair.
+
+    The two are worth telling apart on screen. A *repair* means the prefix
+    already looked like it had a client — the ~1 MB shim was there, its
+    payload was not — which is what an interrupted install leaves and what
+    a user experiences as "it was working yesterday". Saying "installing"
+    there reads as though nothing had ever been set up.
+    """
+    if find_client_exe(prefix) is not None:
+        logger.warning(
+            "[battlenet] client in %s is incomplete (the shim is there, the "
+            "versioned payload is not) — reinstalling it", prefix,
+        )
+        launcher_toast(
+            "toasts.launcher.battlenetRepairingClientMessage",
+            i18n_title_key="toasts.launcher.battlenetRepairingClient",
+        )
+        return
+    logger.info("[battlenet] no client in %s — installing it", prefix)
+    launcher_toast(
+        "toasts.launcher.battlenetInstallingClientMessage",
+        i18n_title_key="toasts.launcher.battlenetInstallingClient",
+    )
+
+
 async def install_client(plan: ProtonLaunchPlan) -> BootstrapResult | None:
     """Install the client into ``plan.prefix_path``.
 
     Returns the ``BootstrapResult`` so the caller can name the failure, or
     ``None`` when the attempt itself raised — the caller falls back to its
     generic "this prefix has no client", which remains true either way.
+
+    Also reached for a prefix holding an *incomplete* client, which the
+    installer completes in place; see :func:`_announce_install`.
     """
-    logger.info("[battlenet] no client in %s — installing it", plan.prefix_path)
-    launcher_toast(
-        "toasts.launcher.battlenetInstallingClientMessage",
-        i18n_title_key="toasts.launcher.battlenetInstallingClient",
-    )
+    _announce_install(plan.prefix_path)
     try:
         from unifideck.stores.battlenet import config as store_config
         from unifideck.stores.battlenet.prefix.client_install import bootstrap_client
@@ -91,6 +196,10 @@ async def install_client(plan: ProtonLaunchPlan) -> BootstrapResult | None:
                 "battlenet", str(getattr(plan.context, "plugin_dir", "") or ""),
             ),
             on_warning=_warn_no_32bit_vulkan,
+            # The Proton this launch already chose. Building the prefix
+            # with one Proton and then running the client with another
+            # leaves a prefix nobody selected the Wine build for.
+            proton_path=plan.env.get("PROTONPATH") or None,
         )
     except Exception:
         # Report "the prefix has no client", which is true and actionable,
@@ -143,3 +252,4 @@ async def ensure_tweaks(plan: ProtonLaunchPlan) -> bool:
     if applied:
         logger.info("[battlenet] applied client tweaks to %s", plan.prefix_path)
     return applied
+

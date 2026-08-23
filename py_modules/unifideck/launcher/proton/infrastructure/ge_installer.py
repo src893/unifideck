@@ -249,17 +249,32 @@ def _write_marker(tag: str) -> None:
 
 
 def _select_tarball(assets: list[dict[str, Any]], tag: str | None = None) -> str | None:
-    """Pick the GE-Proton x86_64 ``.tar.gz`` asset URL (skipping checksums and non-x86 archs)."""
-    if tag:
-        expected_name = f"{tag}.tar.gz"
-        for asset in assets:
-            if asset.get("name") == expected_name:
-                return asset.get("browser_download_url")
+    """Pick the GE-Proton x86_64 ``.tar.gz`` asset URL.
 
-    for asset in assets:
-        name = asset.get("name", "")
+    GE's asset naming changed at GE-Proton11-4: the x86_64 build went from
+    a bare ``<tag>.tar.gz`` to ``<tag>-x86_64.tar.gz``, alongside the
+    aarch64 build that had already started shipping. Both spellings are
+    matched by exact name first, then by the ``-x86_64`` suffix.
+
+    The deny-list scan is kept last as a safety net, but it is only
+    correct while every non-x86 asset carries one of the arch markers it
+    knows about — a future ``riscv64``/``ppc64le`` build would slip
+    through it — so the positive matches deliberately run first.
+    """
+    urls = {a.get("name", ""): a.get("browser_download_url") for a in assets}
+
+    if tag:
+        for expected in (f"{tag}-x86_64.tar.gz", f"{tag}.tar.gz"):
+            if urls.get(expected):
+                return urls[expected]
+
+    for name, url in urls.items():
+        if name.endswith("-x86_64.tar.gz"):
+            return url
+
+    for name, url in urls.items():
         if name.endswith(".tar.gz") and not any(k in name for k in ("sha512", "aarch64", "arm64")):
-            return asset.get("browser_download_url")
+            return url
     return None
 
 
@@ -343,13 +358,49 @@ def _make_executable(path: Path) -> None:
     path.chmod(st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _promote_extracted(staging: Path, tag: str) -> Path | None:
-    """Validate the extracted ``<tag>/`` tree and move it into place.
+def _find_extracted_root(staging: Path, tag: str) -> Path | None:
+    """Locate the extracted Proton tree inside ``staging``.
 
-    GE-Proton archives expand to a single top-level ``<tag>/`` dir. The
-    move into ``COMPAT_TOOLS_DIR`` only happens after the ``proton``
+    A GE-Proton archive expands to a single top-level directory, but its
+    name is NOT reliably the tag. From GE-Proton11-4 the x86_64 build
+    unpacks to ``<tag>-x86_64/`` (matching the renamed asset) instead of
+    ``<tag>/``, so keying off the tag alone made every install fail its
+    "missing proton script" check — silently re-downloading ~500 MB on
+    every plugin start and pinning users to the newest GE already on
+    disk.
+
+    The tree is therefore identified by the thing that actually defines
+    it: a top-level dir holding a ``proton`` script. If a future archive
+    ever ships more than one, an exact-or-``<tag>-``-prefixed name wins
+    so the choice never rests on sort order.
+    """
+    try:
+        candidates = sorted(
+            d for d in staging.iterdir() if d.is_dir() and (d / "proton").is_file()
+        )
+    except OSError as e:
+        logger.warning("[ge_installer] could not scan the staging dir: %s", e)
+        return None
+    if not candidates:
+        return None
+    for candidate in candidates:
+        if candidate.name == tag or candidate.name.startswith(f"{tag}-"):
+            return candidate
+    return candidates[0]
+
+
+def _promote_extracted(staging: Path, tag: str) -> Path | None:
+    """Validate the extracted tree and move it into place as ``<tag>/``.
+
+    The move into ``COMPAT_TOOLS_DIR`` only happens after the ``proton``
     script is confirmed present and made executable, returning the final
     executable ``proton`` path (or ``None`` if validation fails).
+
+    The destination is always the bare ``<tag>`` regardless of what the
+    archive called its top-level dir: the marker file,
+    :func:`installed_ge_proton_path` and the selector all key off the tag,
+    so publishing an arch-suffixed name would install fine yet still miss
+    the "already installed?" check and re-download on the next start.
 
     ``toolmanifest.vdf`` is validated here too, while the tree is still in
     staging and gets cleaned up for free — catching a bad build before it
@@ -357,13 +408,13 @@ def _promote_extracted(staging: Path, tag: str) -> Path | None:
     repeats the check because a tool dir can also rot after install (or
     arrive from somewhere other than this installer).
     """
-    extracted = staging / tag
-    proton = extracted / "proton"
-    if not proton.is_file():
+    extracted = _find_extracted_root(staging, tag)
+    if extracted is None:
         logger.warning(
             "[ge_installer] extracted tree missing proton script (%s)", tag,
         )
         return None
+    proton = extracted / "proton"
     if not _toolmanifest_ok(extracted):
         logger.warning(
             "[ge_installer] discarding %s: extracted tree has no usable "

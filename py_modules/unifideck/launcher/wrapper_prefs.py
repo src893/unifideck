@@ -32,6 +32,13 @@ SIGKILLed (the Steam stop button and the QAM "X" both take that path), so a
 capture can be missed, and without the guard the next launch would push auth's
 stale settings back over the change the user had just made locally.
 
+Deciding what the *plugin* should put in that file in the first place is the
+neighbouring concern, and lives in ``wrapper_locale``: this module carries
+whatever the user changed, that one seeds the UI language. They meet only in
+``wrapper_session.inject``, which seeds and then merges. ``wrapper_locale``
+imports this module for its JSON helpers, so the dependency runs one way and
+nothing here may import it back.
+
 Stdlib-only, and it must not import ``wrapper_session`` - that module imports
 this one. Runs under the SYSTEM python (3.10-3.14), not Decky's bundled 3.11.
 """
@@ -56,155 +63,15 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "config_path",
-    "ensure_locale_seeded",
+    "load_config",
     "merge",
     "read_prefs",
+    "write_config",
 ]
 
 # One key, any name. Matches ``SessionSpec.expand``'s convention for a path
 # component discovered at runtime rather than known.
 _WILDCARD = "*"
-
-# BCP-47 tags to Battle.net's own locale codes. Every code the client build
-# under test supports is listed; an unrecognised tag is left alone (the seed
-# is a no-op), which is safer than guessing.
-_BNET_UI_LOCALES: dict[str, str] = {
-    "en-US": "enUS",
-    "de-DE": "deDE",
-    "fr-FR": "frFR",
-    "es-ES": "esES",
-    "it-IT": "itIT",
-    "pt-BR": "ptBR",
-    "ru-RU": "ruRU",
-    "pl-PL": "plPL",
-    "ko-KR": "koKR",
-    "zh-CN": "zhCN",
-    "zh-TW": "zhTW",
-    "ja-JP": "jaJP",
-    "es-MX": "esMX",
-}
-
-# Written into the auth prefix the first time the plugin locale is seeded, so
-# an explicit user choice that happens to be enUS is never overwritten.
-_LOCALE_SEED_MARKER = ".unifideck_battlenet_locale_seeded.v1"
-
-# ── prefix index ───────────────────────────────────────────────────────────
-
-# Maintained here rather than in ``wrapper_session`` for the same reason
-# ``prefix_index_path`` was first written there: the two halves of this
-# package must not import each other. The inline path is 4 lines rather than
-# an import cycle.
-
-
-def _index_path() -> Path:
-    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(base) / "unifideck" / "wrapper_prefixes.json"
-
-
-def _read_index_locale(store: str) -> str | None:
-    """The plugin's locale, as written by the backend into the prefix index."""
-    try:
-        raw = json.loads(_index_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    row = raw.get(store) if isinstance(raw, dict) else None
-    value = row.get("locale") if isinstance(row, dict) else None
-    return value if isinstance(value, str) and value else None
-
-
-# ── locale seeding ─────────────────────────────────────────────────────────
-
-
-def _install_section_key(config: dict[str, Any]) -> str | None:
-    """The top-level key that names the client's install section, or None.
-
-    The measured layout stores launcher settings under a hash of the client's
-    install path (``5a61123b37cafce1``). Discovered rather than hardcoded: a
-    future client build could change the hash, and ``Client`` / ``Games`` are
-    the only two fixed section names.
-    """
-    for key, value in config.items():
-        if key not in ("Client", "Games") and isinstance(value, dict) and "Client" in value:
-            return key
-    return None
-
-
-def _seed_marker_path(auth_prefix: Path) -> Path:
-    return Path(auth_prefix) / _LOCALE_SEED_MARKER
-
-
-def ensure_locale_seeded(spec: SessionSpec, auth_prefix: Path) -> bool:
-    """Write the plugin's locale into ``auth_prefix`` once, on the first launch.
-
-    Battle.net's factory default is ``enUS``, and the plugin already picks a
-    locale for the install-language modal. Without this seed the client stays
-    at ``enUS`` until the user finds the setting buried in the launcher —
-    which is the exact complaint the modal was built to prevent.
-
-    Marker-gated: once stamped, never re-seeded. An explicit user change
-    captures back to auth through the normal merge, and a later reset to
-    ``enUS`` must be kept rather than silently reverted by the seed.
-
-    Never raises. A fresh auth prefix whose Wine has not yet run has no config
-    file to seed, and that is a no-op rather than a failure — the next launch
-    that reaches this function will have one.
-    """
-    prefs = spec.prefs
-    if prefs is None:
-        return False
-    auth = Path(auth_prefix)
-    if _seed_marker_path(auth).exists():
-        return False
-    locale = _read_index_locale(spec.store)
-    if locale is None:
-        return False
-    bnet_locale = _BNET_UI_LOCALES.get(locale)
-    if bnet_locale is None or bnet_locale == "enUS":
-        # Nothing to do (it is the client's own default), but stamp the marker
-        # so the check above is one stat from here on.
-        _stamp_seed_marker(auth)
-        return False
-    path = config_path(spec, auth)
-    if path is None:
-        return False
-    config = _load(path)
-    if not config:
-        return False
-    section = _install_section_key(config)
-    if section is None:
-        _stamp_seed_marker(auth)
-        return False
-    section_client = config[section].get("Client")
-    if not isinstance(section_client, dict):
-        _stamp_seed_marker(auth)
-        return False
-    current = section_client.get("Language")
-    if current != "enUS":
-        # Already explicitly set (by the user or a previous capture) — do not
-        # overwrite. The marker ensures we never re-enter this function.
-        _stamp_seed_marker(auth)
-        return False
-    if current == bnet_locale:
-        # Should not happen (bnet_locale != enUS), but be correct if it does.
-        _stamp_seed_marker(auth)
-        return False
-    section_client["Language"] = bnet_locale
-    if not _atomic_write(path, config):
-        return False
-    _stamp_seed_marker(auth)
-    logger.info(
-        "[wrapper_prefs] %s: seeded launcher language %s into auth (%s)",
-        spec.store, bnet_locale, auth.name,
-    )
-    return True
-
-
-def _stamp_seed_marker(auth: Path) -> None:
-    """Write the marker. A failure here is a warning, not an error."""
-    try:
-        _seed_marker_path(auth).write_text("", encoding="utf-8")
-    except OSError as exc:
-        logger.warning("[wrapper_prefs] cannot stamp the seed marker: %s", exc)
 
 
 def config_path(spec: SessionSpec, prefix: Path | str) -> Path | None:
@@ -230,10 +97,16 @@ def read_prefs(spec: SessionSpec, prefix: Path | str) -> dict[str, Any] | None:
     path = config_path(spec, prefix)
     if path is None:
         return None
-    return _load(path)
+    return load_config(path)
 
 
-def _load(path: Path) -> dict[str, Any] | None:
+def load_config(path: Path) -> dict[str, Any] | None:
+    """Parse a vendor settings file, or None if it cannot be read as one.
+
+    Public because ``wrapper_locale`` seeds into the same file and must read
+    it the same tolerant way: a truncated write from a client that was killed
+    is a None here, not an exception on a launch path.
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -328,7 +201,7 @@ def _source_is_newer(source: Path, target: Path) -> bool:
         return True
 
 
-def _atomic_write(path: Path, payload: dict[str, Any]) -> bool:
+def write_config(path: Path, payload: dict[str, Any]) -> bool:
     """Replace ``path`` atomically, matching ``wine_registry._atomic_write``.
 
     The client reads this file at startup and rewrites it wholesale from memory,
@@ -403,10 +276,10 @@ def _apply(
     label: str,
 ) -> bool:
     """The merge itself, once every guard has passed."""
-    incoming = _load(source_path)
+    incoming = load_config(source_path)
     if not incoming:
         return False
-    current = _load(target_path)
+    current = load_config(target_path)
     if current is None:
         # No usable file to merge into. Writing a filtered copy is still right:
         # it is what a fresh prefix needs, and the excluded keys are exactly the
@@ -415,7 +288,7 @@ def _apply(
     written = _merge_into(incoming, current, prefs.exclude)
     if not written:
         return False
-    if not _atomic_write(target_path, current):
+    if not write_config(target_path, current):
         return False
     logger.info(
         "[wrapper_prefs] %s: carried %d launcher setting(s) into %s",

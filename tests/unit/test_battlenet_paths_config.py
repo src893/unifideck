@@ -26,8 +26,30 @@ from unifideck.stores.battlenet import paths
 from unifideck.stores.battlenet.id_map import BattlenetIdMap, GameRecord
 
 
-def _make_prefix(root: Path, *, layout: str = "modern", client: bool = True) -> Path:
-    """Build a prefix tree in either layout umu can produce."""
+#: A real build number, as observed on-device beside ``Battle.net.17554``.
+_BUILD_DIR = "Battle.net.17651"
+
+
+def _make_prefix(
+    root: Path,
+    *,
+    layout: str = "modern",
+    client: bool = True,
+    payload: bool = True,
+) -> Path:
+    """Build a prefix tree in either layout umu can produce.
+
+    ``payload=False`` reproduces the shape an *interrupted* client install
+    leaves: the shim executables present, the versioned client they load
+    missing. That prefix used to pass every "is the client here" check.
+
+    The ``payload=True`` shape is the REAL one, measured on this Deck at
+    build 17651 — the client is ``battle.net.dll``, and the payload dir
+    contains no ``Battle.net.exe`` at all. The fixture used to fabricate one
+    there, which is why it could not catch the inverse bug: keying the check
+    on that exe reported every real client as incomplete. See
+    :func:`test_a_real_payload_has_no_exe_only_the_client_dll`.
+    """
     prefix = root / "pfx-under-test"
     drive_c = prefix / ("pfx/drive_c" if layout == "modern" else "drive_c")
     drive_c.mkdir(parents=True)
@@ -36,7 +58,25 @@ def _make_prefix(root: Path, *, layout: str = "modern", client: bool = True) -> 
         client_dir.mkdir(parents=True)
         (client_dir / paths.CLIENT_EXE).write_bytes(b"MZ")
         (client_dir / paths.LAUNCHER_EXE).write_bytes(b"MZ")
+        if payload:
+            _write_payload(client_dir / _BUILD_DIR)
     return prefix
+
+
+def _write_payload(build: Path) -> Path:
+    """A complete payload dir, in the shape Blizzard actually ships.
+
+    The auxiliary exes are included deliberately: they are what a payload
+    dir really holds, they land early, and a check keyed on "some exe is
+    here" must not accept them as the client.
+    """
+    build.mkdir(parents=True, exist_ok=True)
+    (build / paths.CLIENT_DLL).write_bytes(b"MZ")       # the client
+    (build / "libcef.dll").write_bytes(b"MZ")
+    (build / "Battle.net.mpq").write_bytes(b"MPQ")
+    (build / "BlizzardError.exe").write_bytes(b"MZ")    # auxiliary
+    (build / "GameSessionMonitor.exe").write_bytes(b"MZ")
+    return build
 
 
 # --------------------------------------------------------------------------
@@ -76,6 +116,113 @@ def test_prefix_without_drive_c_is_not_a_prefix(tmp_path: Path) -> None:
     assert paths.client_installed(tmp_path / "nope") is False
 
 
+# --------------------------------------------------------------------------
+# client completeness — the shim is not the client
+# --------------------------------------------------------------------------
+
+
+def test_a_shim_without_its_payload_is_not_an_installed_client(tmp_path: Path) -> None:
+    """The exact prefix an interrupted client install leaves behind.
+
+    ``Battle.net.exe`` next to the launcher is a ~1 MB shim written early;
+    the client it loads lands later in ``Battle.net.<build>/``. Reported
+    from the field on a ROG Ally X: a sign-in stopped mid-install left this
+    shape, ``client_installed`` said yes, the template was derived from it,
+    and every game prefix cloned from that started a launcher with nothing
+    to hand off to — 300 s of spinner per install, forever, with no user
+    action that repaired it.
+    """
+    prefix = _make_prefix(tmp_path, payload=False)
+    assert paths.client_exe(prefix) is not None
+    assert paths.launcher_exe(prefix) is not None
+    assert paths.client_payload_dir(prefix) is None
+    assert paths.client_installed(prefix) is False
+
+
+def test_a_payload_directory_without_its_exe_does_not_count(tmp_path: Path) -> None:
+    """A half-written payload directory is what an interrupted install makes."""
+    prefix = _make_prefix(tmp_path, payload=False)
+    (paths.client_dir(prefix) / _BUILD_DIR).mkdir()
+    assert paths.client_payload_dir(prefix) is None
+    assert paths.client_installed(prefix) is False
+
+
+def test_the_newest_payload_wins(tmp_path: Path) -> None:
+    """The client self-updates into a new sibling; the newest is the live one."""
+    prefix = _make_prefix(tmp_path)
+    _write_payload(paths.client_dir(prefix) / "Battle.net.17999")
+    assert paths.client_payload_dir(prefix).name == "Battle.net.17999"
+
+
+def test_a_real_payload_has_no_exe_only_the_client_dll(tmp_path: Path) -> None:
+    """The regression that blocked every Battle.net install on 0.7.4.
+
+    The completeness check was keyed on ``<build>/Battle.net.exe`` — a file
+    Blizzard never writes. The payload dir holds the client as
+    ``battle.net.dll`` beside ``libcef.dll`` and ``Battle.net.mpq``; its only
+    exes are auxiliary tools. So ``client_installed`` was False for every
+    correctly installed client: installs were refused with "client files are
+    incomplete" and the error's own advice ("sign in again") could never fix
+    it. Measured on-device at build 17651, where the client had installed
+    fine and signed the user in.
+    """
+    prefix = _make_prefix(tmp_path)
+    payload = paths.client_payload_dir(prefix)
+
+    assert payload is not None
+    assert not (payload / paths.CLIENT_EXE).exists()   # the whole bug
+    assert (payload / paths.CLIENT_DLL).is_file()
+    assert paths.client_installed(prefix) is True
+
+
+def test_auxiliary_exes_alone_are_not_the_client(tmp_path: Path) -> None:
+    """A payload with only its small early exes is still incomplete.
+
+    Guards the direction the DLL keying must not lose: those two exes land
+    before the 28 MB client DLL, so accepting "an exe is present" would
+    reinstate the original unrecoverable bug.
+    """
+    prefix = _make_prefix(tmp_path, payload=False)
+    build = paths.client_dir(prefix) / _BUILD_DIR
+    build.mkdir()
+    (build / "BlizzardError.exe").write_bytes(b"MZ")
+    (build / "GameSessionMonitor.exe").write_bytes(b"MZ")
+
+    assert paths.client_payload_dir(prefix) is None
+    assert paths.client_installed(prefix) is False
+
+
+def test_client_dll_match_is_case_insensitive(tmp_path: Path) -> None:
+    """One Blizzard capitalisation change must not break every client."""
+    prefix = _make_prefix(tmp_path, payload=False)
+    build = paths.client_dir(prefix) / _BUILD_DIR
+    build.mkdir()
+    (build / "Battle.Net.DLL").write_bytes(b"MZ")
+
+    assert paths.client_payload_dir(prefix) is not None
+    assert paths.client_installed(prefix) is True
+
+
+@pytest.mark.parametrize("payload", [True, False])
+@pytest.mark.parametrize("layout", ["modern", "legacy"])
+def test_backend_and_launcher_agree_on_completeness(
+    tmp_path: Path, layout: str, payload: bool,
+) -> None:
+    """The rule is written twice and must never drift.
+
+    The launcher copy runs out-of-process under the SYSTEM python and
+    cannot import the backend, so the two implementations are independent
+    code. This is the only thing holding them together.
+    """
+    from unifideck.launcher.proton.handlers import battlenet_client as launcher_side
+
+    prefix = _make_prefix(tmp_path, layout=layout, payload=payload)
+    assert launcher_side.client_installed(prefix) is paths.client_installed(prefix)
+    assert (launcher_side.find_payload_dir(prefix) is None) is (
+        paths.client_payload_dir(prefix) is None
+    )
+
+
 def test_ownership_requires_the_marker_not_the_path(tmp_path: Path) -> None:
     """Never infer ownership from location — deleting a prefix is final."""
     prefix = _make_prefix(tmp_path)
@@ -93,7 +240,7 @@ def test_auth_and_template_prefixes_cannot_collide_with_a_game_uid(tmp_path: Pat
 
 def test_client_version_dirs_sorted_oldest_to_newest(tmp_path: Path) -> None:
     """Self-update writes a new sibling; repair removes the newest."""
-    prefix = _make_prefix(tmp_path)
+    prefix = _make_prefix(tmp_path, payload=False)
     parent = paths.client_dir(prefix)
     for build in ("17554", "17651", "9000"):
         (parent / f"Battle.net.{build}").mkdir()

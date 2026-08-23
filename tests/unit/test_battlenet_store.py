@@ -181,10 +181,28 @@ def test_start_auth_reports_no_bootstrap_needed_once_the_client_exists(
     client.mkdir(parents=True)
     (client / bpaths.CLIENT_EXE).write_bytes(b"MZ")
     (client / bpaths.LAUNCHER_EXE).write_bytes(b"MZ")
+    build = client / "Battle.net.17651"
+    build.mkdir()
+    (build / bpaths.CLIENT_DLL).write_bytes(b"MZ")
 
     result = asyncio.run(store.start_auth())
 
     assert result.metadata["needs_bootstrap"] is False
+
+
+def test_start_auth_still_needs_bootstrap_when_only_the_shim_is_there(
+    store: BattlenetStore,
+) -> None:
+    """An interrupted install leaves the shim; sign-in must still repair it."""
+    prefix = store.prefixes.auth_prefix
+    client = prefix / "drive_c" / bpaths.CLIENT_DIR
+    client.mkdir(parents=True)
+    (client / bpaths.CLIENT_EXE).write_bytes(b"MZ")
+    (client / bpaths.LAUNCHER_EXE).write_bytes(b"MZ")
+
+    result = asyncio.run(store.start_auth())
+
+    assert result.metadata["needs_bootstrap"] is True
 
 
 def test_start_auth_does_not_clear_the_signed_out_marker(store: BattlenetStore) -> None:

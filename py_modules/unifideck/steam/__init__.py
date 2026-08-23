@@ -7,9 +7,15 @@ Public re-exports of the helpers most callers need:
 * :class:`SteamGridDBClient` and its convenience helpers from
   :mod:`unifideck.steam.steamgriddb`.
 
-Anything else (``steam.shortcuts``, ``steam.owned_games``) stays
-behind the submodule import so the public surface here remains
-small and stable.
+Anything else (``steam.owned_games``) stays behind the submodule
+import so the public surface here remains small and stable.
+
+``steam.shortcuts`` used to live here too — a shortcuts.vdf writer
+with backup, count validation and rollback, and zero callers. Its
+guarantees were folded into the one writer that actually runs
+(``services/shortcut/persistence.write_vdf``) and the module removed:
+a dead module that looks like the safe path is worse than no module,
+because the next reader assumes those protections are in force.
 
 The previous version of this file had a stale ``try: import
 steam_utils`` branch left over from a refactor — the module

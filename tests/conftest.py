@@ -127,8 +127,11 @@ def _fail_on_live_data_writes():
     before = _snapshot(live)
     yield
     after = _snapshot(live)
-    added = sorted(after.keys() - before.keys())
-    changed = sorted(k for k in after.keys() & before.keys() if after[k] != before[k])
+    added = sorted(k for k in after.keys() - before.keys() if not _foreign_writer(k))
+    changed = sorted(
+        k for k in after.keys() & before.keys()
+        if after[k] != before[k] and not _foreign_writer(k)
+    )
     if not added and not changed:
         return
     pytest.fail(
@@ -140,6 +143,21 @@ def _fail_on_live_data_writes():
         f"  modified: {changed}",
         pytrace=False,
     )
+
+
+#: SQLite sidecars. The running plugin keeps ``playtime.db`` open, and SQLite
+#: touches its ``-wal``/``-shm`` companions on a timer whether or not anything
+#: of ours runs — measured advancing every 60s on an idle dev Deck with no
+#: tests in flight. Attributing that to the suite makes this guard fire on
+#: every run during normal on-device development, which is precisely when the
+#: plugin is live, and a guard that cries wolf gets disabled. The database
+#: file itself is still watched; only the sidecars are exempt.
+_FOREIGN_SUFFIXES = ("-wal", "-shm", "-journal")
+
+
+def _foreign_writer(rel_path: str) -> bool:
+    """Whether ``rel_path`` is written by something other than the suite."""
+    return rel_path.endswith(_FOREIGN_SUFFIXES)
 
 
 def _snapshot(root):
@@ -155,6 +173,50 @@ def _snapshot(root):
         except OSError:
             continue
     return snap
+
+
+@pytest.fixture(autouse=True)
+def _isolate_by_uuid_index(monkeypatch):
+    """Point udev's ``by-uuid`` index at an empty per-test temp dir.
+
+    ``mount_naming.BY_UUID_DIR`` is a module-level ``Path("/dev/disk/by-uuid")``
+    and is the default for both ``uuid_by_device()`` and ``scan_mounts()``, so a
+    test that builds a synthetic ``/proc/mounts`` naming ``/dev/sda1`` but does
+    not pass ``by_uuid_dir=`` reads the REAL host disk index. Whether it then
+    gets a name-derived id or a UUID one depends on the machine's partition
+    layout, which makes the assertion non-deterministic across hosts.
+
+    That is not hypothetical: ``test_spaced_mount_point_yields_a_path_safe_id``
+    passed on both this Deck and a python:3.11 container but failed on CI's
+    3.11 runner and passed on its 3.12 runner, because each matrix job gets its
+    own VM and only one of them had a UUID indexed for ``/dev/sda1``. It
+    expected ``ext:External_SSD`` and got ``ext:1f78b26…``.
+
+    Patching ``BY_UUID_DIR`` itself does NOT work: it is bound as a default
+    argument at import time (``by_uuid_dir: Path = BY_UUID_DIR``), so rebinding
+    the module attribute leaves both defaults pointing at the real dir. What is
+    resolved per call is the ``uuid_by_device`` global, so the guard goes there
+    and neutralises only the unsafe default: a call that reaches for the real
+    ``/dev/disk/by-uuid`` gets an empty map, which is the documented degradation
+    for network shares and FUSE mounts and yields the name-derived id.
+
+    Tests that exercise real UUID behaviour pass ``by_uuid_dir=`` a fake index
+    (see ``_fake_uuid_index``) and still get the genuine lookup.
+    """
+    from unifideck.utils import mount_naming, mounts
+
+    real = mount_naming.BY_UUID_DIR
+    original = mount_naming.uuid_by_device
+
+    def _guarded(root: Path = real) -> dict[str, str]:
+        if Path(root) == Path(real):
+            return {}
+        return original(root)
+
+    # Both namespaces: ``mounts`` imported the name directly, and other
+    # callers reach it through ``mount_naming``.
+    monkeypatch.setattr(mounts, "uuid_by_device", _guarded)
+    monkeypatch.setattr(mount_naming, "uuid_by_device", _guarded)
 
 
 @pytest.fixture(autouse=True)

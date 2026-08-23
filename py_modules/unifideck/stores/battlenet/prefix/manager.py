@@ -166,6 +166,15 @@ class BattlenetPrefixManager:
         """True when the auth prefix holds a client worth cloning."""
         return inspect_prefix(self.auth_prefix).usable
 
+    def auth_is_busy(self) -> bool:
+        """Whether a client is live in the auth prefix.
+
+        Public because writing *into* the auth prefix needs the same guard
+        that copying out of it does, and the caller doing the writing is the
+        installer rather than this class. See :meth:`_auth_is_busy`.
+        """
+        return self._auth_is_busy()
+
     def template_status(self) -> PrefixStatus:
         return inspect_prefix(self.template_prefix)
 

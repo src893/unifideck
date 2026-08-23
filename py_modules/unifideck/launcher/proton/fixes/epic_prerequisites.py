@@ -21,6 +21,9 @@ from pathlib import Path
 from typing import Any
 
 from unifideck.launcher.frontend_bridge import launcher_toast
+from unifideck.launcher.proton.infrastructure.container_escape import (
+    escape_argv,
+)
 from unifideck.launcher.proton.infrastructure.core import ProtonLaunchPlan
 
 logger = logging.getLogger(__name__)
@@ -217,6 +220,10 @@ async def _spawn_installer(cmd: list[str], env: dict[str, str]) -> bool:
     success and rely on the game itself to fail at launch if the
     prereq is genuinely missing — same heuristic as the legacy helper.
     """
+    # Escape Steam's pressure-vessel when Force-Compat wrapped us, or the
+    # installer nests a second container and cannot run at all. No-op when
+    # unwrapped. See infrastructure.container_escape.
+    cmd = escape_argv(cmd, env, None)
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, env=env,

@@ -238,14 +238,12 @@ _PRUNERS: dict[str, Callable[[str], list[str]]] = {
 }
 
 
-def reconcile_for_install(store: str, game_id: str) -> list[str]:
-    """Clear stale local state for ``(store, game_id)`` before installing.
+def _run_pruner(store: str, game_id: str) -> list[str]:
+    """Dispatch one ``(store, game_id)`` through :data:`_PRUNERS`.
 
-    Returns a human-readable list of what was cleaned, empty when there was
-    nothing to do (the overwhelmingly common case — this is a couple of
-    ``stat`` calls on a healthy system).
-
-    NEVER call this for an update. See the module docstring.
+    Shared by both entry points below. Never raises: a CLI record we cannot
+    tidy is a cosmetic problem, and both callers sit in flows (an install,
+    a full wipe) that must not fail because of it.
     """
     pruner = _PRUNERS.get(store)
     if pruner is None:
@@ -264,3 +262,87 @@ def reconcile_for_install(store: str, game_id: str) -> list[str]:
             store, game_id, "; ".join(cleaned),
         )
     return cleaned
+
+
+def reconcile_for_install(store: str, game_id: str) -> list[str]:
+    """Clear stale local state for ``(store, game_id)`` before installing.
+
+    Returns a human-readable list of what was cleaned, empty when there was
+    nothing to do (the overwhelmingly common case — this is a couple of
+    ``stat`` calls on a healthy system).
+
+    NEVER call this for an update. See the module docstring.
+    """
+    return _run_pruner(store, game_id)
+
+
+def _nile_dangling_ids() -> list[str]:
+    """Game ids in nile's record whose install dir is gone (list shape)."""
+    data = _load(_NILE_RECORD)
+    if not isinstance(data, list):
+        return []
+    return [
+        str(entry["id"])
+        for entry in data
+        if isinstance(entry, dict)
+        and entry.get("id")
+        and _path_is_missing(entry.get("path"))
+    ]
+
+
+def _legendary_dangling_ids() -> list[str]:
+    """Game ids in legendary's record whose install dir is gone (dict shape)."""
+    data = _load(_LEGENDARY_RECORD)
+    if not isinstance(data, dict):
+        return []
+    return [
+        str(game_id)
+        for game_id, entry in data.items()
+        if isinstance(entry, dict)
+        and _path_is_missing(entry.get("install_path"))
+    ]
+
+
+# Parallel to :data:`_PRUNERS` — adding a store means adding a row to both.
+_DANGLING_ID_READERS: dict[str, Callable[[], list[str]]] = {
+    "amazon": _nile_dangling_ids,
+    "epic": _legendary_dangling_ids,
+}
+
+
+def prune_dangling_records() -> list[str]:
+    """Drop every CLI install record whose directory is no longer on disk.
+
+    The bulk counterpart to :func:`reconcile_for_install`, for "Delete all
+    Unifideck data": the wipe deletes the game directories but deliberately
+    leaves ``installed.json`` alone, because
+    :func:`unifideck.core.marker_sweep.collect_install_roots` reads those
+    files to find the library roots it sweeps. Once the sweep has run,
+    every row it acted on is dangling — and a surviving dangling row makes
+    a re-login show phantom installed games.
+
+    Safe to call in either cleanup mode: a row whose directory still exists
+    is never touched (:func:`_path_is_missing`), so non-destructive cleanup —
+    which keeps the games — finds nothing to prune. Must run *after*
+    ``marker_sweep.sweep_all``, or the roots it needs are already gone.
+
+    Each dangling row is removed through the tested single-row pruners, so
+    N rows means N small atomic rewrites. At real-world counts (14 on the
+    device this was found on) that is cheaper than a new bulk rewriter.
+    """
+    notes: list[str] = []
+    for store, reader in _DANGLING_ID_READERS.items():
+        try:
+            dangling = reader()
+        except Exception:
+            logger.exception(
+                "[stale_installs] reading %s install record failed", store,
+            )
+            continue
+        for game_id in dangling:
+            notes.extend(_run_pruner(store, game_id))
+    if notes:
+        logger.info(
+            "[stale_installs] pruned %d dangling CLI record(s)", len(notes),
+        )
+    return notes

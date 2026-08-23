@@ -30,6 +30,15 @@ Four questions, deliberately no more:
     ``product.db`` carries ``installed``/``playable``/``update_complete``, and
     all three flip in a single write. A store that can answer is believed; only
     one that answers ``None`` falls back to the heuristic.
+
+And one optional fifth, ``status_message``, which is not about recognising
+anything. It is about the wait being legible. A correct 28-minute wait and a
+hang look identical from outside, and the store is the only layer that can tell
+them apart: Battle.net's Agent runs one exclusive operation at a time and says
+so in its own logs, so "Queued behind Battle.net updating itself (88%)" is
+knowable while the generic tick can only say "waiting". Optional because a
+store with nothing to add should not have to say so: the watcher reads it with
+``getattr``, exactly as it reads the optional timing attributes.
 """
 
 from __future__ import annotations
@@ -78,3 +87,11 @@ class InstallProbe(Protocol):
     def is_complete(self, install_dir: str) -> bool | None:
         """Authoritative completion verdict, or ``None`` when there is none."""
         ...
+
+    # Deliberately NOT declared here: ``status_message() -> str | None``, and
+    # the timing overrides ``poll_interval_s`` / ``timeout_s`` /
+    # ``client_gone_grace_s`` / ``never_started_grace_s``. A Protocol member is
+    # required of every implementer, so declaring an optional one would oblige
+    # Ubisoft's probe to carry a method it has nothing to say through. The
+    # watcher reads all of them with ``getattr`` and falls back; this comment
+    # is the contract.

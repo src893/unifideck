@@ -73,12 +73,30 @@ def _data_dir(tmp_path):
     return path
 
 
+def _install_client(root, store: str, *, payload: bool = True) -> None:
+    """Write the store's client into ``root``'s ``drive_c``.
+
+    ``payload=False`` writes only the entry executable. For a store whose
+    entry point is a *shim* (Battle.net) that is the shape an interrupted
+    client install leaves behind, and it must not read as bootstrapped.
+    """
+    drive_c = root / "pfx" / "drive_c"
+    client = drive_c / _SPECS[store].client_rel
+    client.parent.mkdir(parents=True, exist_ok=True)
+    client.write_bytes(b"MZ")
+    glob = _SPECS[store].payload_glob
+    if glob is None or not payload:
+        return
+    # The spec's glob wildcards the build number; pin it to a real one.
+    member = drive_c / glob.replace("*", "17651")
+    member.parent.mkdir(parents=True, exist_ok=True)
+    member.write_bytes(b"MZ")
+
+
 def _bootstrap_prefix(tmp_path, store: str, game_id: str, *, record: bool):
     """A prefix with the store's client installed, as placement leaves it."""
     root = tmp_path / "sd" / "prefixes" / store / game_id
-    client = root / "pfx" / "drive_c" / _SPECS[store].client_rel
-    client.parent.mkdir(parents=True, exist_ok=True)
-    client.write_bytes(b"MZ")
+    _install_client(root, store)
     if record:
         (_data_dir(tmp_path) / _SPECS[store].id_map).write_text(
             json.dumps({game_id: {"prefix_path": str(root)}}),
@@ -114,13 +132,31 @@ async def test_the_internal_default_location_is_found_too(
 ) -> None:
     """A prefix in the default dir with nothing recorded still resolves."""
     root = _data_dir(tmp_path) / "prefixes" / store / "g2"
-    client = root / "pfx" / "drive_c" / _SPECS[store].client_rel
-    client.parent.mkdir(parents=True, exist_ok=True)
-    client.write_bytes(b"MZ")
+    _install_client(root, store)
 
     ctx = await d._build_context(["launcher", f"{store}:g2"], _NoRow())
 
     assert ctx.action == "install"
+
+
+@pytest.mark.asyncio
+async def test_a_battlenet_shim_without_its_payload_is_not_bootstrapped(
+    tmp_path,
+) -> None:
+    """``Battle.net.exe`` alone is a ~1 MB stub, not a client.
+
+    An interrupted client install leaves exactly this, and treating it as a
+    bootstrapped prefix is what sent every install into a 300 s wait for a
+    client that could never start.
+    """
+    root = tmp_path / "sd" / "prefixes" / "battlenet" / "g4"
+    _install_client(root, "battlenet", payload=False)
+    (_data_dir(tmp_path) / _SPECS["battlenet"].id_map).write_text(
+        json.dumps({"g4": {"prefix_path": str(root)}}),
+    )
+
+    with pytest.raises(d.GameNotFoundError):
+        await d._build_context(["launcher", "battlenet:g4"], _NoRow())
 
 
 @pytest.mark.parametrize("store", STORES)

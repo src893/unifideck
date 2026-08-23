@@ -47,8 +47,11 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import shutil
 from pathlib import Path
+
+from .selector import PYTHON_CANDIDATES
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +86,58 @@ def in_pressure_vessel() -> bool:
         os.environ.get("container") == "pressure-vessel"  # noqa: SIM112
         or Path("/run/pressure-vessel").is_dir()
     )
+
+
+def _host_python_argv(argv: list[str]) -> list[str]:
+    """Re-resolve a container-side interpreter path on the HOST.
+
+    ``argv[0]`` is the interpreter ``selector.find_python_3_10_plus`` picked,
+    and that probe walks :data:`selector.PYTHON_CANDIDATES` against **this
+    process's** filesystem. Inside pressure-vessel that is the *container's*
+    ``/usr/bin``, whose Python need not exist on the host we are about to
+    escape to. From a user bundle (2026-08-12, SteamOS desktop): the
+    container offered python3.13, the host had only 3.14.6, so every
+    Force-Compat launch died in 0.0s with rc=127 and a game log of nothing
+    but::
+
+        env: '/usr/bin/python3.13': No such file or directory
+
+    Both prelauncher attempts and the direct-exe retry failed the same way,
+    so Steam's Compatibility picker — the one workflow this module exists to
+    support — was unusable on that machine.
+
+    The fix is to defer resolution to exec time on the far side: hand the
+    escape client a ``sh`` shim that walks the SAME candidate list and execs
+    the first interpreter that is actually executable there. No probing of
+    ``/run/host`` (not guaranteed to be mounted) and no extra round-trip.
+
+    Returns ``argv`` unchanged when ``argv[0]`` is not an absolute
+    interpreter path, so a non-Python command is passed through untouched.
+
+    This is invisible on the Deck, where host and container Python are the
+    same version — it only bites when the two differ.
+    """
+    if not argv:
+        return argv
+    exe = Path(argv[0])
+    if not exe.is_absolute() or not exe.name.startswith("python3"):
+        return argv
+    # Candidates are our own constants, but quote anyway so a future entry
+    # containing a space cannot break out of the loop.
+    candidates = " ".join(shlex.quote(c) for c in PYTHON_CANDIDATES)
+    script = (
+        f'for p in {candidates}; do\n'
+        f'  [ -x "$p" ] && exec "$p" "$@"\n'
+        f'done\n'
+        f'exec python3 "$@"\n'
+    )
+    logger.info(
+        "[launcher.umu] interpreter %s was resolved inside the container; "
+        "re-resolving on the host at exec time (candidates: %s)",
+        argv[0], ", ".join(PYTHON_CANDIDATES),
+    )
+    # "sh" fills $0 so the real arguments start at $1.
+    return ["sh", "-c", script, "sh", *argv[1:]]
 
 
 def _forwarded_env(env: dict[str, str] | None) -> list[str]:
@@ -132,7 +187,10 @@ def escape_argv(
     escaped = [client, "--alongside-steam"]
     if cwd is not None:
         escaped.append(f"--directory={cwd}")
-    escaped.extend(["--", "env", *_forwarded_env(env), *argv])
+    # The interpreter in ``argv`` was resolved against the CONTAINER's
+    # filesystem; past this point the command runs on the host, so it has
+    # to be re-resolved there. See _host_python_argv.
+    escaped.extend(["--", "env", *_forwarded_env(env), *_host_python_argv(argv)])
     logger.info(
         "[launcher.umu] inside Steam's pressure-vessel container "
         "(Force-Compat is set on this shortcut) — escaping via %s so umu "

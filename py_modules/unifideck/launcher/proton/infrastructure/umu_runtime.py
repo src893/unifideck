@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from unifideck.launcher.frontend_bridge import launcher_toast
+from unifideck.launcher.proton.infrastructure.game_log import (
+    open_game_log,
+)
 
 from .container_escape import escape_argv
 
@@ -21,11 +24,6 @@ logger = logging.getLogger(__name__)
 # Ns" toast truthful.
 _RETRY_BACKOFF_SECONDS = 3
 UMU_CACHE_DIR = Path("~/.local/share/umu").expanduser()
-def _launches_dir() -> Path:
-    """Resolved per call, not at import — same trap as ``wrapper_session.prefix_index_path``."""
-    return Path(
-        os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share")),
-    ) / "unifideck" / "launches"
 # umu-run picks the Steam Runtime *generation* per Proton build (it reads
 # the selected PROTONPATH's own toolmanifest.vdf) — a newer GE-Proton can
 # require "steamrt4" instead of the default "sniper"/"steamrt3". Mirrors
@@ -143,24 +141,6 @@ def _reap_prefix_wineserver(env: dict[str, str] | None) -> None:
         logger.exception("[launcher.umu] wineserver reap failed for %s", prefix)
 
 
-def open_game_log() -> Any:
-    """Open the per-launch game-output log for umu stdout+stderr.
-
-    Proton / Wine / the game itself write to stdout+stderr, which the
-    Python logging archive does NOT capture — so a game that exits
-    nonzero left no trace and had to be reproduced by hand. Routing
-    that output to ``launches/<launch_id>.game.log`` makes every
-    failure diagnosable from disk. Returns ``None`` on any error, in
-    which case the caller inherits stdout/stderr as before.
-    """
-    from unifideck.launcher.diagnostics.correlation import get_launch_id
-    try:
-        _launches_dir().mkdir(parents=True, exist_ok=True)
-        path = _launches_dir() / f"{get_launch_id()}.game.log"
-        return path.open("a", encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.debug("[launcher.umu] game log open failed: %s", e)
-        return None
 def cleanup_umu_runtime_cache() -> None:
     """Cleanup UMU runtime cache."""
     targets = [
@@ -377,6 +357,7 @@ async def run_umu_with_retry(
     cwd: Path | None = None,
     max_attempts: int = 2,
     on_start: Callable[[object], None] | None = None,
+    should_retry: Callable[[], bool] | None = None,
     timeout: float | None = None,  # noqa: ASYNC109 — bounds a subprocess wait via wait_for + killpg, not an asyncio.timeout() wrapper
     reap_wineserver: bool = True,
 ) -> int:
@@ -390,6 +371,15 @@ async def run_umu_with_retry(
     process group is force-killed and the attempt returns
     :data:`UMU_TIMEOUT_RC`, which is deliberately *not* recoverable, so
     a hung Proton fails the step instead of retrying into the same hang.
+
+    ``should_retry`` is a last-word veto, consulted only once a code has
+    already been judged recoverable. The recoverable test is
+    code-and-duration and cannot see intent, which is a problem for any run
+    the user can close by hand: sign-in windows exit inside
+    :data:`_RECOVERABLE_MAX_RUNTIME_SECONDS` all the time, and reopening one
+    the user just dismissed is worse than not retrying a genuine crash. A
+    caller that can tell the two apart says so here. Returning False ends the
+    run with the real exit code, exactly as an unrecoverable one would.
 
     Pass ``reap_wineserver=False`` when this run shares a prefix with a
     wineserver it does **not** own — Battle.net phase C, which sends an
@@ -422,6 +412,12 @@ async def run_umu_with_retry(
             if rc == 0:
                 return 0
             if not _is_recoverable(rc, ran_for):
+                return rc
+            if should_retry is not None and not should_retry():
+                logger.info(
+                    "[launcher.umu] rc=%d is recoverable but the caller vetoed "
+                    "a retry", rc,
+                )
                 return rc
             if attempt < max_attempts:
                 await _prepare_retry(rc, attempt, max_attempts)

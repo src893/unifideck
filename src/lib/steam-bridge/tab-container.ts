@@ -16,9 +16,27 @@ import {
   setStoreCountSink,
   type TabFilter,
 } from "../library-filters";
+import { getDeviceType } from "../device-type";
 import type { SteamAppOverview } from "../../types/steam";
 
 const t = (key: string): string => i18n.t(key);
+
+/** Title key for the compatibility tab, named after the actual device.
+ *
+ * Only the title varies. The tab id and its `deckCompat` filter stay
+ * fixed, so nobody's tab layout moves when the label changes.
+ * Non-Valve hardware gets the neutral rating name rather than being
+ * told its games are great on a handheld it does not own. */
+function compatTabTitleKey(): string {
+  switch (getDeviceType()) {
+    case "machine":
+      return "deckTabs.greatOnMachine";
+    case "other":
+      return "deckTabs.steamOSCompatible";
+    default:
+      return "deckTabs.greatOnDeck";
+  }
+}
 
 export interface UnifideckTab {
   id: string;
@@ -32,7 +50,7 @@ export function getUnifideckTabs(): UnifideckTab[] {
   return [
     {
       id: "unifideck-deck",
-      title: t("deckTabs.greatOnDeck"),
+      title: t(compatTabTitleKey()),
       position: 0,
       filters: [{ type: "deckCompat", params: {} }],
     },

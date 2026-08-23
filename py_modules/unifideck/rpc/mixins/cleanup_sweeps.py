@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -46,8 +46,27 @@ _WRAPPER_ID_MAPS = (
     "~/.local/share/unifideck/battlenet_id_map.json",
 )
 
+# gogdl's build-manifest caches, all *inside* ``~/.config/unifideck``.
+#
+# The directory is named ``heroic_gogdl`` by gogdl itself, but it is OURS:
+# ``stores/gog/tokens/gogdl_credentials.py`` points ``GOGDL_CONFIG_PATH`` at
+# the parent of ``gogdl_config_dir`` (default ``~/.config/unifideck/gogdl``),
+# and gogdl then creates ``heroic_gogdl/manifests/`` under it. Heroic's own
+# config at ``~/.config/heroic/**`` is NEVER in scope here.
+#
+# Mirrors the per-game locations in ``stores/gog/install/installer.py``
+# ``_wipe_manifests`` (which the per-game GOG uninstall already clears);
+# ``gogdl/`` is normally gone already via :data:`_CONFIG_AUTH_DIRS`, kept
+# here so the sweep is correct whichever dir the config points at.
+_GOGDL_MANIFEST_DIRS = (
+    "~/.config/unifideck/heroic_gogdl/manifests",
+    "~/.config/unifideck/gogdl/manifests",
+    "~/.config/unifideck/gogdl/heroic_gogdl/manifests",
+)
+
 # Unifideck-owned store creds under ``~/.config/unifideck`` (leaves the
-# user's ``config.json`` and Heroic's ``heroic_gogdl`` untouched).
+# user's ``config.json`` untouched, and prunes only the *manifests* inside
+# ``heroic_gogdl`` — see :data:`_GOGDL_MANIFEST_DIRS`).
 _CONFIG_AUTH_FILES = (
     "gog_token.json",
     "gog_credentials.json",
@@ -62,17 +81,27 @@ def is_unifideck_owned(
     entry: dict[str, Any],
     unifideck_tag: str,
     is_unifideck_launch_options: Callable[[str], bool],
+    launcher_path: str = "",
 ) -> bool:
     """True iff a VDF shortcut entry is Unifideck-owned.
 
-    Two independent signals so cleanup catches entries even when
-    Steam silently strips one of them:
+    Ownership is decided on the ``Exe`` target, the one marker a
+    foreign tool cannot forge. LaunchOptions tokens and the
+    ``UNIFIDECK_TAG`` are then used to *narrow* which of our own
+    entries this is — never on their own to claim one.
 
-    * **LaunchOptions pattern** — most reliable, Steam preserves
-      ``LaunchOptions`` across updates.
-    * **UNIFIDECK_TAG** in ``tags`` — secondary signal for old
-      entries that pre-date the LaunchOptions convention.
+    Gating on those two signals alone is how "Delete all Unifideck
+    data" came to delete the user's own shortcuts, and to sweep their
+    grid artwork with them (the same predicate builds the artwork
+    keep-set). It is the UD-006 failure mode, and adding ``battlenet``
+    to ``STORE_ID_PATTERN`` widened it to every NonSteamLaunchers
+    Battle.net entry — those carry a ``battlenet:<id>`` token and
+    would otherwise read as ours.
     """
+    from unifideck.services.shortcut.write_guard import is_ours
+
+    if not is_ours(entry, launcher_path):
+        return False
     launch = entry.get("LaunchOptions", "")
     if isinstance(launch, str) and is_unifideck_launch_options(launch):
         return True
@@ -85,6 +114,24 @@ def is_unifideck_owned(
     return any(
         isinstance(v, str) and v == unifideck_tag for v in tag_values
     )
+
+
+def _delete_entry(entry: Path) -> bool:
+    """Remove one directory-entry. True when something was actually removed.
+
+    Directories go through :func:`safe_rmtree` (structural guard); anything
+    else is unlinked. Shared by the sweeps that empty a directory, so the
+    file-vs-dir branching lives in one place instead of nesting inside each
+    of their loops.
+    """
+    try:
+        if entry.is_dir() and not entry.is_symlink():
+            return safe_rmtree(entry)
+        entry.unlink(missing_ok=True)
+    except OSError:
+        logger.exception("[cleanup] delete(%s) failed", entry)
+        return False
+    return True
 
 
 def sweep_nonsteam_grid(grid_dir: str, keep_appids: set[int]) -> int:
@@ -151,16 +198,32 @@ def sweep_data_dir(keep: frozenset[str]) -> int:
     for entry in data_dir.iterdir():
         if entry.name in keep:
             continue
-        try:
-            if entry.is_dir() and not entry.is_symlink():
-                if safe_rmtree(entry):
-                    count += 1
-            else:
-                entry.unlink(missing_ok=True)
-                count += 1
-        except OSError:
-            logger.exception("[cleanup] delete(%s) failed", entry)
+        if _delete_entry(entry):
+            count += 1
     return count
+
+
+def _iter_external_prefixes(id_map: str, data_dir: str) -> Iterator[str]:
+    """Yield each prefix recorded in one id map that lives outside *data_dir*.
+
+    Split out of :func:`sweep_external_prefixes` so the parse-guard,
+    shape-guard and per-entry filtering stop nesting inside its delete loop
+    (that function was over the cognitive-complexity gate).
+    """
+    try:
+        data = json.loads(
+            Path(id_map).expanduser().read_text(encoding="utf-8"),
+        )
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    for entry in data.values():
+        recorded = entry.get("prefix_path") if isinstance(entry, dict) else None
+        if not recorded:
+            continue
+        if not str(Path(recorded).expanduser()).startswith(data_dir):
+            yield str(recorded)
 
 
 def sweep_external_prefixes() -> int:
@@ -179,22 +242,82 @@ def sweep_external_prefixes() -> int:
     data_dir = str(Path("~/.local/share/unifideck").expanduser())
     count = 0
     for id_map in _WRAPPER_ID_MAPS:
-        path = Path(id_map).expanduser()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        for entry in data.values():
-            p = entry.get("prefix_path") if isinstance(entry, dict) else None
-            if not p:
-                continue
-            if str(Path(p).expanduser()).startswith(data_dir):
-                continue
-            if safe_rmtree(p):
+        for prefix in _iter_external_prefixes(id_map, data_dir):
+            if safe_rmtree(prefix):
                 count += 1
-                logger.info("[cleanup] removed external prefix %s", p)
+                logger.info("[cleanup] removed external prefix %s", prefix)
+    return count
+
+
+def sweep_gogdl_manifests() -> int:
+    """Delete gogdl's cached build manifests. Destructive-mode only.
+
+    GOG keeps no ``installed.json``; a manifest describes the *build* that
+    is on disk, and the per-game uninstall already drops it
+    (``stores/gog/install/installer.py`` ``_wipe_manifests``). "Delete all
+    data" left them behind, so a wiped GOG library kept 19 manifests for
+    games whose files were gone.
+
+    Destructive-only on purpose: in non-destructive mode the game files
+    stay, the manifest still describes them accurately, and dropping it
+    would turn the next update into a full re-download instead of a delta.
+    """
+    count = 0
+    for raw in _GOGDL_MANIFEST_DIRS:
+        base = Path(raw).expanduser()
+        if not base.is_dir():
+            continue
+        # The directory itself stays — gogdl reuses it on the next install.
+        for entry in base.iterdir():
+            if _delete_entry(entry):
+                count += 1
+    return count
+
+
+def sweep_cache_backups(cache_dir: str) -> int:
+    """Delete the ``*.json.bak`` siblings in the cache dir.
+
+    ``CacheStore._save`` snapshots the *previous* file contents to ``.bak``
+    before each write, so clearing a namespace is what creates these — a
+    wipe left 291 KB of pre-wipe metadata and 125 KB of compat data sitting
+    next to the emptied caches. Worse, ``CacheStore._load``'s recovery path
+    restores from ``.bak`` when the live file fails to parse, so a single
+    torn write after a wipe would bring the whole pre-wipe cache back.
+
+    Must run *after* the namespaces are cleared, or the clear re-creates
+    what this removed. Takes the directory from the caller (the
+    CacheManager owns the path) rather than hardcoding it.
+    """
+    base = Path(cache_dir).expanduser()
+    if not base.is_dir():
+        return 0
+    count = 0
+    for entry in base.glob("*.json.bak"):
+        try:
+            entry.unlink(missing_ok=True)
+            count += 1
+        except OSError:
+            logger.exception("[cleanup] unlink(%s) failed", entry)
+    return count
+
+
+def sweep_stale_install_records(drop_gog_manifests: bool) -> int:
+    """Prune dangling CLI install records (+ gogdl manifests when wiping).
+
+    One thread-offloadable seam for the two record-level sweeps that must
+    run *after* ``marker_sweep.sweep_all`` — it reads legendary's and
+    nile's ``installed.json`` to find the roots it sweeps, so pruning them
+    any earlier would blind it.
+
+    ``prune_dangling_records`` is self-gating (it only drops rows whose
+    directory is missing), so it is safe in both cleanup modes; the gogdl
+    manifests are destructive-only, hence the flag.
+    """
+    from unifideck.core import stale_installs
+
+    count = len(stale_installs.prune_dangling_records())
+    if drop_gog_manifests:
+        count += sweep_gogdl_manifests()
     return count
 
 

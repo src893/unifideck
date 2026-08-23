@@ -101,6 +101,10 @@ export interface StorageLocationInfo {
   id: StorageLocation;
   label: string;
   path: string;
+  /** Device root this location sits on — the mount point for an
+   *  external drive. Used by the backend to recognise ids saved under
+   *  an older scheme; the UI has no reason to read it. */
+  device_path?: string;
   available: boolean;
   free_space_gb: number;
 }

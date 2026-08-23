@@ -596,12 +596,21 @@ sync_version() {
 # ── Decky CLI detection ───────────────────────────────────────
 # The Decky CLI handles building the UI and packaging everything securely.
 # These functions download the appropriate CLI binary for the host OS.
+# Asset names are ``decky-<os>-<arch>`` — a BARE binary, not an archive,
+# and the arch is spelled ``x86_64``/``aarch64`` (uname's spelling), not
+# ``x64``/``arm64``. Getting either wrong 404s.
+#
+# This was wrong in both respects and nobody noticed, because a working
+# ``cli/decky`` was committed to the repo and ``check_decky_cli`` returns
+# early when the file is already there. Deleting that binary (PR #270) is
+# what surfaced it: the download 404s, the build silently falls back to
+# the local path, and on a clean checkout there is no CLI at all.
 get_decky_cli_url() {
     local os arch base="https://github.com/SteamDeckHomebrew/cli/releases/latest/download"
-    case "$(uname -s)" in Linux*) os="linux";; Darwin*) os="darwin";; CYGWIN*|MINGW*|MSYS*) os="windows";; *) os="linux";; esac
-    case "$(uname -m)" in x86_64|amd64) arch="x64";; arm64|aarch64) arch="arm64";; *) arch="x64";; esac
+    case "$(uname -s)" in Linux*) os="linux";; Darwin*) os="macOS";; CYGWIN*|MINGW*|MSYS*) os="windows";; *) os="linux";; esac
+    case "$(uname -m)" in x86_64|amd64) arch="x86_64";; arm64|aarch64) arch="aarch64";; *) arch="x86_64";; esac
     if [ "$os" = "windows" ]; then echo "${base}/decky-${os}-${arch}.exe"
-    else echo "${base}/decky-${os}-${arch}.tar.gz"; fi
+    else echo "${base}/decky-${os}-${arch}"; fi
 }
 
 check_decky_cli() {
@@ -616,14 +625,15 @@ check_decky_cli() {
     log_info "Downloading Decky CLI for $(uname -s)/$(uname -m)..."
     local url; url=$(get_decky_cli_url)
     mkdir -p "$CLI_LOCATION"
-    if [[ "$url" == *.tar.gz ]]; then
-        if curl -sL "$url" -o "$CLI_LOCATION/decky.tar.gz"; then
-            cd "$CLI_LOCATION"; tar -xzf decky.tar.gz 2>/dev/null; rm -f decky.tar.gz
-            chmod +x decky 2>/dev/null || true; cd "$SCRIPT_DIR"
-            test -f "$cli" && "$cli" --version > /dev/null 2>&1 && { log_success "Decky CLI ready"; return 0; }
-        fi
+    # ``-f`` so a 404 is a curl failure instead of an HTML error page
+    # written to disk and then chmod'd executable.
+    if curl -fsSL "$url" -o "$cli"; then
+        chmod +x "$cli" 2>/dev/null || true
+        if "$cli" --version > /dev/null 2>&1; then log_success "Decky CLI ready"; return 0; fi
+        log_warn "Downloaded Decky CLI does not run on this platform"
+        rm -f "$cli"
     fi
-    log_warn "Could not download Decky CLI - will use local build"
+    log_warn "Could not download Decky CLI ($url) - will use local build"
     return 1
 }
 
@@ -708,10 +718,12 @@ _stage_plugin_files() {
     done
 
     # Build-time leftovers that must never ship: the per-binary download stamps
-    # (see prebuild_binaries) and any half-finished download, plus mypy's cache,
-    # which the copy above otherwise drags in from py_modules/.
+    # (see prebuild_binaries) and any half-finished download, plus the lint
+    # caches, which the copy above otherwise drags in from py_modules/. Both
+    # caches are created by simply running the CI gate block before a build,
+    # so a release build is exactly when they are most likely to be present.
     rm -f "$dest"/bin/*.url "$dest"/bin/*.new
-    rm -rf "$dest/py_modules/.mypy_cache"
+    rm -rf "$dest/py_modules/.mypy_cache" "$dest/py_modules/.import_linter_cache"
 }
 
 # ── Skip the Decky CLI's redundant binary re-download ─────────
@@ -966,7 +978,7 @@ build_local() {
     "py_modules/unifideck/stores/battlenet/__init__.py"
     "py_modules/unifideck/stores/battlenet/store.py"
     "py_modules/unifideck/launcher/proton/handlers/battlenet.py"
-    "py_modules/unifideck/launcher/proton/wrapper_stores.py"
+    "py_modules/unifideck/launcher/wrapper_stores.py"
         "py_modules/unifideck/stores/microsoft/__init__.py"
         "py_modules/unifideck/stores/microsoft/microsoft_store.py"
 
@@ -993,7 +1005,12 @@ build_local() {
         "py_modules/unifideck/auth/orchestrator.py"
         "py_modules/unifideck/steam/__init__.py"
         "py_modules/unifideck/steam/library.py"
-        "py_modules/unifideck/steam/shortcuts.py"
+        # steam/shortcuts.py was split into services/shortcut/* when
+        # shortcuts.vdf reads/writes gained integrity checks. These three
+        # are the ones a library-destroying regression would take out.
+        "py_modules/unifideck/services/shortcut/vdf_read.py"
+        "py_modules/unifideck/services/shortcut/write_guard.py"
+        "py_modules/unifideck/services/shortcut/vdf_backup.py"
         "py_modules/unifideck/steam/steamgriddb/__init__.py"
         "py_modules/unifideck/cdp/__init__.py"
         "py_modules/unifideck/compatibility/__init__.py"

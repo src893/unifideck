@@ -145,3 +145,85 @@ def test_rockstar_app_name_on_non_epic_store_is_not_special(tmp_path, monkeypatc
     plan = _prepare(tmp_path, monkeypatch, "gog", game_id="Heather")
     assert plan.env["STORE"] == "gog"
     assert "WINEDLLOVERRIDES" not in plan.env
+
+
+# ── Titles that bundle their own ICU (Cyberpunk 2077) ──────────────────
+#
+# Field case (2026-08-12 bundle): every Cyberpunk launch that reached the
+# game aborted on ``icuuc.dll.u_setMemoryFunctions_65`` — Wine's builtin
+# icuuc.dll stub, new in GE-Proton11-3, shadowing the ICU 65 the game ships.
+# The window opens and stays blank. Proton's own bundled ICU is 68, so only
+# loading the game's own copy fixes it.
+
+def test_cyberpunk_gog_gets_native_icu_override(tmp_path, monkeypatch):
+    plan = _prepare(
+        tmp_path, monkeypatch, "gog",
+        game_id="1423049311", exe_name="REDprelauncher.exe",
+    )
+    assert plan.env["WINEDLLOVERRIDES"] == "icuuc=n,b"
+    assert plan.env["STORE"] == "gog"
+
+
+def test_cyberpunk_matches_on_exe_name_alone(tmp_path, monkeypatch):
+    """Primary tier: the exe name, for the direct-exe retry path and for
+    any store/edition whose id we do not hold."""
+    plan = _prepare(
+        tmp_path, monkeypatch, "gog",
+        game_id="some-unknown-id", exe_name="Cyberpunk2077.exe",
+    )
+    assert plan.env["WINEDLLOVERRIDES"] == "icuuc=n,b"
+
+
+def test_cyberpunk_epic_codename_matches(tmp_path, monkeypatch):
+    """Same title on Epic ships the same bundled ICU, so it needs the same
+    override — the gate is deliberately store-independent."""
+    plan = _prepare(
+        tmp_path, monkeypatch, "epic", game_id="Ginger", exe_name="null",
+    )
+    assert plan.env["WINEDLLOVERRIDES"] == "icuuc=n,b"
+
+
+def test_ordinary_gog_game_gets_no_icu_override(tmp_path, monkeypatch):
+    """Regression guard: a non-matching launch is left completely alone."""
+    plan = _prepare(
+        tmp_path, monkeypatch, "gog",
+        game_id="1207658883", exe_name="AoW.exe",
+    )
+    assert "WINEDLLOVERRIDES" not in plan.env
+
+
+def test_icu_override_merges_with_existing(tmp_path, monkeypatch):
+    """Must not clobber overrides another step already set (Proton appends
+    its own long default list, and battlenet sets locationapi=d)."""
+    monkeypatch.setenv("WINEDLLOVERRIDES", "locationapi=d")
+    plan = _prepare(
+        tmp_path, monkeypatch, "gog",
+        game_id="1423049311", exe_name="REDprelauncher.exe",
+    )
+    assert plan.env["WINEDLLOVERRIDES"] == "locationapi=d;icuuc=n,b"
+
+
+def test_user_env_override_still_wins(tmp_path, monkeypatch):
+    """ctx.env_overrides is applied last, so an explicit user value wins."""
+    ctx = LaunchContext(
+        store="gog",
+        game_id="1423049311",
+        exe_path=Path("/dev/REDprelauncher.exe"),
+        work_dir=tmp_path,
+        plugin_dir=tmp_path,
+        env_overrides={"WINEDLLOVERRIDES": "icuuc=b"},
+    )
+    prefix = tmp_path / "prefix"
+    prefix.mkdir()
+    monkeypatch.setattr(core, "_resolve_prefix", lambda c: prefix)
+    monkeypatch.setattr(core, "_lookup_umu_id", lambda c, s, p: None)
+    monkeypatch.setattr(
+        core, "_locate_umu_wrapper", lambda p, d: tmp_path / "umu-run",
+    )
+    plan = core.proton_prepare(
+        ctx, RuntimeState(),
+        python_bin=Path("/usr/bin/python3"),
+        proton_path=tmp_path / "proton",
+        proton_tool_id="GE-Proton11-3",
+    )
+    assert plan.env["WINEDLLOVERRIDES"] == "icuuc=b"

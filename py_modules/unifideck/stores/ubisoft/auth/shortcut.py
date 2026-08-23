@@ -38,8 +38,25 @@ _ORPHAN_SHORTCUT_NAMES = frozenset(
 )
 
 
-def _prune_orphan_shortcuts(shortcuts: dict[str, Any]) -> int:
-    """Prune orphan shortcuts."""
+def _dropped_appids(shortcuts: dict[str, Any], keys: list[str]) -> list[int]:
+    """Appids of *keys*, for the write guard's ``allow_foreign_drops``.
+
+    Both prunes below deliberately target rows with an **empty** ``Exe``,
+    which the ownership test therefore reads as the user's rather than
+    ours. That is the right read — we genuinely cannot prove those rows
+    are ours — so instead of loosening the test, the deletions are
+    declared to the guard by appid.
+    """
+    ids = []
+    for key in keys:
+        appid = shortcuts[key].get("appid")
+        if isinstance(appid, int):
+            ids.append(appid)
+    return ids
+
+
+def _prune_orphan_shortcuts(shortcuts: dict[str, Any]) -> list[int]:
+    """Prune orphan shortcuts; return the appids removed."""
     orphan_ids = [
         idx
         for idx, s in shortcuts.items()
@@ -47,6 +64,7 @@ def _prune_orphan_shortcuts(shortcuts: dict[str, Any]) -> int:
         and not (s.get("Exe") or s.get("exe") or "").strip('"')
         and not s.get("LaunchOptions", "")
     ]
+    dropped = _dropped_appids(shortcuts, orphan_ids)
     for idx in orphan_ids:
         name = shortcuts[idx].get("AppName", "?")
         logger.info(
@@ -55,25 +73,26 @@ def _prune_orphan_shortcuts(shortcuts: dict[str, Any]) -> int:
             name,
         )
         del shortcuts[idx]
-    return len(orphan_ids)
+    return dropped
 
 
 def _prune_legacy_template_shortcuts(
     shortcuts: dict[str, Any],
-) -> int:
-    """Prune legacy template shortcuts."""
+) -> list[int]:
+    """Prune legacy template shortcuts; return the appids removed."""
     legacy_ids = [
         idx
         for idx, s in shortcuts.items()
         if s.get("LaunchOptions", "") == _LEGACY_AUTH_LAUNCH_OPTIONS
     ]
+    dropped = _dropped_appids(shortcuts, legacy_ids)
     for idx in legacy_ids:
         logger.info(
             "[UbisoftAuth] removing legacy .template shortcut [%s]",
             idx,
         )
         del shortcuts[idx]
-    return len(legacy_ids)
+    return dropped
 
 
 class _AuthShortcut:
@@ -198,11 +217,16 @@ class _AuthShortcut:
             orphans_removed or legacy_removed or canonical_added,
         )
         if vdf_dirty:
-            await sm.write_shortcuts(shortcuts_data)
+            # Declare the pruned rows so the write guard lets them go —
+            # see ``_dropped_appids``.
+            await sm.write_shortcuts(
+                shortcuts_data,
+                allow_foreign_drops=frozenset(orphans_removed + legacy_removed),
+            )
             logger.info(
                 "[UbisoftAuth] VDF updated: orphans=%d legacy=%d added=%s",
-                orphans_removed,
-                legacy_removed,
+                len(orphans_removed),
+                len(legacy_removed),
                 canonical_added,
             )
         await self._finalize_new_shortcut(sm, appid, unsigned_id)
@@ -266,11 +290,21 @@ class _AuthShortcut:
             shortcuts = shortcuts_data.get("shortcuts", {})
             vdf_updated = False
             found = False
+            from unifideck.services.shortcut.write_guard import is_ours
+
             for _idx, s in shortcuts.items():
                 full_id = self.extract_store_id(
                     s.get("LaunchOptions", ""),
                 )
                 if full_id != (self._parent._config.auth_shortcut_store_id):
+                    continue
+                # ``_fix_shortcut_fields`` rewrites Exe/StartDir/appid, so
+                # matching on LaunchOptions alone would convert one of the
+                # user's own shortcuts into our auth tile. ``is_ours`` is a
+                # *basename* test, so the real repair case this exists for —
+                # the plugin dir moved, leaving a stale absolute Exe — still
+                # matches and still gets fixed.
+                if not is_ours(s, launcher_path):
                     continue
                 found = True
                 if self._fix_shortcut_fields(

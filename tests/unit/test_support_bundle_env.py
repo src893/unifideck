@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -395,12 +396,86 @@ def test_multiple_mountpoints_count_as_visible(
     """
     monkeypatch.setattr(probe_storage, "_run_lsblk", lambda: _LSBLK["blockdevices"])
     monkeypatch.setattr(
-        probe_storage, "_plugin_view", lambda: ({"/home": {"fstype": "ext4"}}, "ok"),
+        probe_storage,
+        "_plugin_view",
+        lambda: ({"/home": {"fstype": "ext4", "in_picker": True}}, "ok"),
     )
     devices = probe_storage.storage_block(_FakeConfig())["devices"]
     home = next(item for item in devices if item["name"] == "nvme0n1p8")
     assert home["visible_to_plugin"] is True
     assert home["all_mountpoints"] == ["/home", "/var/tmp"]
+
+
+def test_visible_but_unwritable_mount_is_not_reported_as_undetected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two different failures must not share one verdict.
+
+    A mount the scanner sees but the picker refuses for writability is
+    an ownership problem on the mount root, not a detection problem —
+    reporting it as "not detected" sent the last triage round chasing
+    the scanner instead.
+    """
+    monkeypatch.setattr(probe_storage, "_run_lsblk", lambda: _LSBLK["blockdevices"])
+    monkeypatch.setattr(
+        probe_storage,
+        "_plugin_view",
+        lambda: (
+            {
+                "/run/media/deck/SteamDeckSD": {
+                    "fstype": "ext4", "writable": False, "in_picker": False,
+                },
+            },
+            "ok",
+        ),
+    )
+    block = probe_storage.storage_block(_FakeConfig())
+    sd = next(item for item in block["devices"] if item["name"] == "mmcblk0p1")
+    assert sd["visible_to_plugin"] is True
+    assert sd["offered_in_picker"] is False
+    assert "NOT writable" in sd["visibility_note"]
+    assert "not reported by the plugin" not in sd["visibility_note"]
+    assert block["plugin_view_mount_points"] == ["/run/media/deck/SteamDeckSD"]
+    assert block["plugin_view_picker_mount_points"] == []
+
+
+def test_plugin_view_records_both_scanner_variants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """``in_picker`` comes from the strict scan the picker really calls."""
+    lenient = tmp_path / "lenient"
+    strict = tmp_path / "strict"
+    for path in (lenient, strict):
+        path.mkdir()
+
+    def fake_scan(_home_dev: int, *, require_writable: bool = True) -> list[Any]:
+        chosen = strict if require_writable else lenient
+        return [
+            SimpleNamespace(
+                mount_point=str(chosen), device="/dev/sda1", fstype="ext4",
+                writable=require_writable, effective_uid=None, options={},
+            ),
+        ]
+
+    monkeypatch.setattr("unifideck.utils.mounts.scan_mounts", fake_scan)
+    view, status = probe_storage._plugin_view()
+    assert status == "ok"
+    assert view[str(lenient)]["in_picker"] is False
+    assert list(view) == [str(lenient)]
+
+
+def test_fstype_lookup_handles_a_spaced_mount_point(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Shared decoder, so this can't drift from the real scanner again."""
+    mounts_file = tmp_path / "proc-mounts"
+    mounts_file.write_text(
+        "/dev/sda1 /run/media/deck/External\\040SSD exfat rw 0 0\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        probe_storage, "_read_str", lambda _p: mounts_file.read_text(encoding="utf-8"),
+    )
+    assert probe_storage._fstype_for("/run/media/deck/External SSD/Games") == "exfat"
 
 
 def test_internal_disk_is_not_treated_as_user_storage() -> None:

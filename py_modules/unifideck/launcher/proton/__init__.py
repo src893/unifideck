@@ -8,6 +8,8 @@ cache management.
 
 from __future__ import annotations
 
+import logging
+
 from unifideck.launcher.proton.handlers.battlenet import battlenet_launch
 from unifideck.launcher.types.errors import UmuRuntimeError
 
@@ -30,6 +32,36 @@ from .infrastructure.umu_runtime import (
     unrecoverable_runtime_variants,
 )
 from .prefix_setup import setup_prefix
+
+logger = logging.getLogger(__name__)
+
+
+def _apply_prefix_language(plan: ProtonLaunchPlan) -> None:
+    """Write the user's language into the prefix's Windows locale.
+
+    Swallows everything. A game in the wrong language is a bad day; a game
+    that will not start is a worse one, and this is the only step in
+    :func:`dispatch` whose failure costs nothing but a preference.
+
+    Imports are local for the same reason the store handlers' were: this
+    module is imported at launcher start-up under the system python, and the
+    config stack it pulls in is not needed until a launch actually happens.
+    """
+    try:
+        from unifideck.config.config_manager import ConfigManager
+        from unifideck.config.defaults_path import resolve_defaults_config_path
+        from unifideck.config.user_config_path import resolve_user_config_path
+        from unifideck.launcher.proton.language_setup import (
+            apply_prefix_language,
+        )
+
+        config = ConfigManager(
+            resolve_defaults_config_path(plan.context.plugin_dir),
+            user_path=resolve_user_config_path(),
+        )
+        apply_prefix_language(str(plan.prefix_path), config=config)
+    except Exception as err:
+        logger.warning("[launcher.proton] prefix language setup failed: %s", err)
 
 
 async def dispatch(plan: ProtonLaunchPlan) -> int:
@@ -75,6 +107,14 @@ async def dispatch(plan: ProtonLaunchPlan) -> int:
             "error.",
             context={"variants": broken, "umu_cache": str(UMU_CACHE_DIR)},
         )
+
+    # The prefix's Windows locale, for every store. Before the branch on
+    # purpose: a prefix's ``Control Panel\International`` is prefix state, not
+    # store state, and running here means it lands before any handler starts
+    # something that would take ownership of the registry — which is what
+    # Battle.net's phase A does. Refuses rather than lies when the prefix is
+    # already busy; see ``language_setup.registry_io``.
+    _apply_prefix_language(plan)
 
     store = plan.context.store
     if store == "battlenet":

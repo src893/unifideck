@@ -1,1 +1,382 @@
-{"files":{"default":{"arkansas#ARK_BACKGROUND":{"hash":"f532dd0e38203e3e0fef613ea4616f68","name":"resources/ark/background_ark_new_panel.webp"},"arkansas#ARK_ICON_MASSIVE":{"hash":"2d67501f1f410d546d1f250a41e334c8","name":"resources/ark/icon_game_ark_massive.png"},"arkansas#ARK_ICON_MEDIUM":{"hash":"456f635414c9fa1813a91238e7058393","name":"resources/ark/icon_game_ark_medium.png"},"arkansas#ARK_ICON_SMALL":{"hash":"471ead93310c8af1f7148b32d472c0a7","name":"resources/ark/icon_game_ark_small.png"},"arkansas#ARK_ICON_SVG":{"hash":"9540f1846abe0f212e90f4c4b0a31f36","name":"resources/ark/icon_ark.svg"},"arkansas#ARK_INSTALL_BACKGROUND":{"hash":"dd8c562627ce4bfa002096c9aa86cb14","name":"resources/ark/install_background_ark.jpg"},"arkansas#ARK_KEY_ART":{"hash":"c97ef2541596b7152a2adb4a1367cda8","name":"resources/ark/key_art_ark.jpg"},"arkansas#ARK_LOGO":{"hash":"5b327f5b0bbefa7c93179aadd19a5c53","name":"resources/ark/logo_ark.png"}}},"fragment_id":"arkansas","installs":{"ark":{"auto_update_policy":{"meets_criteria":{"actioned_in_last_n_seconds":1209600,"played_in_last_n_seconds":2592000}},"tact_product":"ark"},"ark_artbook":{"tact_product":"ark-artbook"},"ark_artbook_dev_1":{"tact_product":"ark-artbook-dev-1"},"ark_artbook_rc":{"tact_product":"ark-artbook-rc"},"ark_retail_dev_1":{"tact_product":"ark-retail-dev-1"},"ark_retail_rc":{"tact_product":"ark-retail-rc"}},"presence_resources":[{"display_name":"arkansas#ARK_NAME","icon_16":"arkansas#ARK_ICON_SMALL","icon_275":"arkansas#ARK_ICON_MASSIVE","icon_32":"arkansas#ARK_ICON_SMALL","icon_56":"arkansas#ARK_ICON_MEDIUM","icon_svg":"arkansas#ARK_ICON_SVG","program_id":"ARK"}],"products":[{"base":{"alt_content_url":"nydus://client/shop/embedded/product/the-outer-worlds-2","background":"arkansas#ARK_BACKGROUND","badges":[{"description":"default#BADGE_TEXT_HH_COMPATIBLE","hidden":false,"id":"hh_compatible","image":"default#LOGO_HH_COMPATIBLE","label":"default#BADGE_TEXT_HH_COMPATIBLE","rank":0}],"breaking_news_url":"nydus://client/outerworlds2/alert","content_id":"the-outer-worlds-2","default_product_type":"retail","genre":"default#GENRE_ACTION_RPG","handheld_feature_compatibility":[{"compatibility":"handheld_optimized","description":"default#HH_COMPATIBILITY_DEFAULTS_WORK_OPTIMIZED"},{"compatibility":"handheld_compatible","description":"default#HH_COMPATIBILITY_ICONOGRAPHY_COMPATIBLE"},{"compatibility":"handheld_optimized","description":"default#HH_COMPATIBILITY_TEXT_INPUT_OPTIMIZED"},{"compatibility":"handheld_optimized","description":"default#HH_COMPATIBILITY_UI_LEGIBILITY_OPTIMIZED"},{"compatibility":"handheld_optimized","description":"default#HH_COMPATIBILITY_DISPLAY_OPTIMIZED"}],"handheld_status":["handheld_compatible"],"icon_medium":"arkansas#ARK_ICON_MEDIUM","icon_small":"arkansas#ARK_ICON_SMALL","icon_svg":"arkansas#ARK_ICON_SVG","icon_tiny":"arkansas#ARK_ICON_SMALL","install_background":"arkansas#ARK_INSTALL_BACKGROUND","key_art":"arkansas#ARK_KEY_ART","logo":"arkansas#ARK_LOGO","name":"arkansas#ARK_NAME","post_launch_actions":["game_session_monitor"],"program_id":"ARK","quick_links":[{"action":{"type":"add_to_favorites"},"icon":"default#QUICK_LINK_ICON_STAR","id":"add_to_favorites","label":"default#QUICK_LINK_FAVORITE","rank":300},{"action":{"target":"shop","type":"url","url":"nydus://client/shop/family/the-outer-worlds-2"},"icon":"default#QUICK_LINK_ICON_SHOP","id":"shop","label":"default#QUICK_LINK_SHOP","rank":301},{"action":{"external":true,"target":"external","type":"url","url":"https://forums.obsidian.net/forum/161-the-outer-worlds-2/"},"icon":"default#QUICK_LINK_ICON_FORUMS","id":"forums","label":"default#QUICK_LINK_FORUMS","rank":302},{"action":{"external":true,"target":"external","type":"url","url":"https://outerworlds2.obsidian.net/"},"icon":"default#QUICK_LINK_ICON_WEBSITE","id":"website","label":"default#QUICK_LINK_WEBSITE","rank":304},{"action":{"external":true,"target":"external","type":"url","url":"https://support.obsidian.net/"},"icon":"default#QUICK_LINK_ICON_SUPPORT","id":"support","label":"default#QUICK_LINK_SUPPORT","rank":303},{"action":{"target":"shop","type":"upgrade","url":"nydus://client/shop/product/the-outer-worlds-2"},"color":"#6cdb00","icon":"default#QUICK_LINK_ICON_UPGRADE","id":"upgrade","label":"default#QUICK_LINK_UPGRADE_AVAILABLE","rank":100}],"region_permission_flags":{"default":"requires_account_visible","overrides":[{"CN":"disabled_invisible","override_type":"region"},{"BLR":"disabled_invisible","RUS":"disabled_invisible","override_type":"country"}]},"starter_items":[{"action":{"external":true,"target":"external","type":"url","url":"https://www.obsidian.net/games/the-outer-worlds-2"},"id":"website","label":"default#STARTER_ITEM_WEBSITE","rank":2,"style":"link","type":"button"}],"starter_mode_when_offline":false,"supported_platforms":["win"],"supported_regions":["GLOBAL"],"supports_language_selection":false,"supports_starter_mode":false,"tab_order":17,"title_id":4280907,"types":{"artbook":{"auto_favorite_on_grant":true,"install_background":"arkansas#ARK_INSTALL_BACKGROUND","selector_display_name":"arkansas#ARK_ARTBOOK_NAME","type_name":"arkansas#ARK_ARTBOOK_NAME","uid":"ark_artbook"},"artbook_dev":{"auto_favorite_on_grant":true,"install_background":"arkansas#ARK_INSTALL_BACKGROUND","selector_display_name":"arkansas#ARK_ARTBOOK_DEV_NAME","type_name":"arkansas#ARK_ARTBOOK_DEV_NAME","uid":"ark_artbook_dev_1"},"artbook_rc":{"auto_favorite_on_grant":true,"install_background":"arkansas#ARK_INSTALL_BACKGROUND","selector_display_name":"arkansas#ARK_ARTBOOK_RC_NAME","type_name":"arkansas#ARK_ARTBOOK_RC_NAME","uid":"ark_artbook_rc"},"dev":{"auto_favorite_on_grant":true,"install_background":"arkansas#ARK_INSTALL_BACKGROUND","selector_display_name":"arkansas#ARK_DEV_NAME","type_name":"arkansas#ARK_DEV_NAME","uid":"ark_retail_dev_1"},"rc":{"auto_favorite_on_grant":true,"install_background":"arkansas#ARK_INSTALL_BACKGROUND","selector_display_name":"arkansas#ARK_RC_NAME","type_name":"arkansas#ARK_RC_NAME","uid":"ark_retail_rc"},"retail":{"auto_favorite_on_grant":true,"badges":[{"description":"default#BADGE_TEXT_INCLUDED_WITH_GAME_PASS","hidden":true,"id":"game_pass","image":"default#LOGO_XBOX_GAME_PASS","label":"default#BADGE_TEXT_INCLUDED_WITH","rank":1,"tooltip":"default#GAME_PASS_DISCLAIMER"}],"supports_starter_mode":true,"uid":"ark"}},"uid":"ark","unsupported_platform_behavior":"disabled_install"},"id":"ARK"}],"program_configuration":{"ARK":{"run_each_rule":[{"actions":[{"add_product":{"product_id":{"id":"ARK","type":"retail"}}}],"match":{"license_id":[1105059,1105074]}},{"actions":[{"add_product":{"product_id":{"id":"ARK","type":"artbook"}}}],"match":{"license_id":[1105074]}},{"actions":[{"add_product":{"product_id":{"id":"ARK","type":"dev"}}},{"add_product":{"product_id":{"id":"ARK","type":"artbook_dev"}}},{"add_product":{"product_id":{"id":"ARK","type":"rc"}}},{"add_product":{"product_id":{"id":"ARK","type":"artbook_rc"}}}],"match":{"license_id":[1118152]}}]}},"strings":{"deDE":{"arkansas#ARK_ARTBOOK_NAME":"The Outer Worlds 2 – Artbook","arkansas#ARK_NAME":"The Outer Worlds 2"},"default":{"arkansas#ARK_ARTBOOK_DEV_NAME":"TOW2 Artbook Dev","arkansas#ARK_ARTBOOK_NAME":"The Outer Worlds 2 Artbook","arkansas#ARK_ARTBOOK_RC_NAME":"TOW2 Artbook RC","arkansas#ARK_DEV_NAME":"TOW2 Dev","arkansas#ARK_NAME":"The Outer Worlds 2","arkansas#ARK_RC_NAME":"TOW2 RC"},"esES":{"arkansas#ARK_ARTBOOK_NAME":"Libro de arte de The Outer Worlds 2","arkansas#ARK_NAME":"The Outer Worlds 2"},"esMX":{"arkansas#ARK_ARTBOOK_NAME":"Libro de arte de The Outer Worlds 2","arkansas#ARK_NAME":"The Outer Worlds 2"},"frFR":{"arkansas#ARK_ARTBOOK_NAME":"Artbook The Outer Worlds 2","arkansas#ARK_NAME":"The Outer Worlds 2"},"itIT":{"arkansas#ARK_ARTBOOK_NAME":"Artbook di The Outer Worlds 2","arkansas#ARK_NAME":"The Outer Worlds 2"},"jaJP":{"arkansas#ARK_ARTBOOK_NAME":"『The Outer Worlds 2』アートブック","arkansas#ARK_NAME":"The Outer Worlds 2"},"koKR":{"arkansas#ARK_ARTBOOK_NAME":"The Outer Worlds 2 아트북","arkansas#ARK_NAME":"The Outer Worlds 2"},"plPL":{"arkansas#ARK_ARTBOOK_NAME":"Artbook The Outer Worlds 2","arkansas#ARK_NAME":"The Outer Worlds 2"},"ptBR":{"arkansas#ARK_ARTBOOK_NAME":"Livro de Arte Digital de The Outer Worlds 2","arkansas#ARK_NAME":"The Outer Worlds 2"},"ruRU":{"arkansas#ARK_ARTBOOK_NAME":"The Outer Worlds 2 — артбук","arkansas#ARK_NAME":"The Outer Worlds 2"},"thTH":{"arkansas#ARK_ARTBOOK_NAME":"หนังสือรวมงานภาพ The Outer Worlds 2","arkansas#ARK_NAME":"The Outer Worlds 2"},"zhCN":{"arkansas#ARK_ARTBOOK_NAME":"《The Outer Worlds 2》艺术设定集","arkansas#ARK_NAME":"《The Outer Worlds 2》"},"zhTW":{"arkansas#ARK_ARTBOOK_NAME":"《天外世界 2》美術圖冊","arkansas#ARK_NAME":"《天外世界 2》"}},"version":30}
+{
+  "files": {
+    "default": {
+      "arkansas#ARK_BACKGROUND": {
+        "hash": "f532dd0e38203e3e0fef613ea4616f68",
+        "name": "resources/ark/background_ark_new_panel.webp"
+      },
+      "arkansas#ARK_ICON_MASSIVE": {
+        "hash": "2d67501f1f410d546d1f250a41e334c8",
+        "name": "resources/ark/icon_game_ark_massive.png"
+      },
+      "arkansas#ARK_ICON_MEDIUM": {
+        "hash": "456f635414c9fa1813a91238e7058393",
+        "name": "resources/ark/icon_game_ark_medium.png"
+      },
+      "arkansas#ARK_ICON_SMALL": {
+        "hash": "471ead93310c8af1f7148b32d472c0a7",
+        "name": "resources/ark/icon_game_ark_small.png"
+      },
+      "arkansas#ARK_ICON_SVG": {
+        "hash": "9540f1846abe0f212e90f4c4b0a31f36",
+        "name": "resources/ark/icon_ark.svg"
+      },
+      "arkansas#ARK_INSTALL_BACKGROUND": {
+        "hash": "dd8c562627ce4bfa002096c9aa86cb14",
+        "name": "resources/ark/install_background_ark.jpg"
+      },
+      "arkansas#ARK_KEY_ART": {
+        "hash": "c97ef2541596b7152a2adb4a1367cda8",
+        "name": "resources/ark/key_art_ark.jpg"
+      },
+      "arkansas#ARK_LOGO": {
+        "hash": "5b327f5b0bbefa7c93179aadd19a5c53",
+        "name": "resources/ark/logo_ark.png"
+      }
+    }
+  },
+  "fragment_id": "arkansas",
+  "installs": {
+    "ark": {
+      "auto_update_policy": {
+        "meets_criteria": {
+          "actioned_in_last_n_seconds": 1209600,
+          "played_in_last_n_seconds": 2592000
+        }
+      },
+      "tact_product": "ark"
+    },
+    "ark_artbook": { "tact_product": "ark-artbook" },
+    "ark_artbook_dev_1": { "tact_product": "ark-artbook-dev-1" },
+    "ark_artbook_rc": { "tact_product": "ark-artbook-rc" },
+    "ark_retail_dev_1": { "tact_product": "ark-retail-dev-1" },
+    "ark_retail_rc": { "tact_product": "ark-retail-rc" }
+  },
+  "presence_resources": [
+    {
+      "display_name": "arkansas#ARK_NAME",
+      "icon_16": "arkansas#ARK_ICON_SMALL",
+      "icon_275": "arkansas#ARK_ICON_MASSIVE",
+      "icon_32": "arkansas#ARK_ICON_SMALL",
+      "icon_56": "arkansas#ARK_ICON_MEDIUM",
+      "icon_svg": "arkansas#ARK_ICON_SVG",
+      "program_id": "ARK"
+    }
+  ],
+  "products": [
+    {
+      "base": {
+        "alt_content_url": "nydus://client/shop/embedded/product/the-outer-worlds-2",
+        "background": "arkansas#ARK_BACKGROUND",
+        "badges": [
+          {
+            "description": "default#BADGE_TEXT_HH_COMPATIBLE",
+            "hidden": false,
+            "id": "hh_compatible",
+            "image": "default#LOGO_HH_COMPATIBLE",
+            "label": "default#BADGE_TEXT_HH_COMPATIBLE",
+            "rank": 0
+          }
+        ],
+        "breaking_news_url": "nydus://client/outerworlds2/alert",
+        "content_id": "the-outer-worlds-2",
+        "default_product_type": "retail",
+        "genre": "default#GENRE_ACTION_RPG",
+        "handheld_feature_compatibility": [
+          {
+            "compatibility": "handheld_optimized",
+            "description": "default#HH_COMPATIBILITY_DEFAULTS_WORK_OPTIMIZED"
+          },
+          {
+            "compatibility": "handheld_compatible",
+            "description": "default#HH_COMPATIBILITY_ICONOGRAPHY_COMPATIBLE"
+          },
+          {
+            "compatibility": "handheld_optimized",
+            "description": "default#HH_COMPATIBILITY_TEXT_INPUT_OPTIMIZED"
+          },
+          {
+            "compatibility": "handheld_optimized",
+            "description": "default#HH_COMPATIBILITY_UI_LEGIBILITY_OPTIMIZED"
+          },
+          {
+            "compatibility": "handheld_optimized",
+            "description": "default#HH_COMPATIBILITY_DISPLAY_OPTIMIZED"
+          }
+        ],
+        "handheld_status": ["handheld_compatible"],
+        "icon_medium": "arkansas#ARK_ICON_MEDIUM",
+        "icon_small": "arkansas#ARK_ICON_SMALL",
+        "icon_svg": "arkansas#ARK_ICON_SVG",
+        "icon_tiny": "arkansas#ARK_ICON_SMALL",
+        "install_background": "arkansas#ARK_INSTALL_BACKGROUND",
+        "key_art": "arkansas#ARK_KEY_ART",
+        "logo": "arkansas#ARK_LOGO",
+        "name": "arkansas#ARK_NAME",
+        "post_launch_actions": ["game_session_monitor"],
+        "program_id": "ARK",
+        "quick_links": [
+          {
+            "action": { "type": "add_to_favorites" },
+            "icon": "default#QUICK_LINK_ICON_STAR",
+            "id": "add_to_favorites",
+            "label": "default#QUICK_LINK_FAVORITE",
+            "rank": 300
+          },
+          {
+            "action": {
+              "target": "shop",
+              "type": "url",
+              "url": "nydus://client/shop/family/the-outer-worlds-2"
+            },
+            "icon": "default#QUICK_LINK_ICON_SHOP",
+            "id": "shop",
+            "label": "default#QUICK_LINK_SHOP",
+            "rank": 301
+          },
+          {
+            "action": {
+              "external": true,
+              "target": "external",
+              "type": "url",
+              "url": "https://forums.obsidian.net/forum/161-the-outer-worlds-2/"
+            },
+            "icon": "default#QUICK_LINK_ICON_FORUMS",
+            "id": "forums",
+            "label": "default#QUICK_LINK_FORUMS",
+            "rank": 302
+          },
+          {
+            "action": {
+              "external": true,
+              "target": "external",
+              "type": "url",
+              "url": "https://outerworlds2.obsidian.net/"
+            },
+            "icon": "default#QUICK_LINK_ICON_WEBSITE",
+            "id": "website",
+            "label": "default#QUICK_LINK_WEBSITE",
+            "rank": 304
+          },
+          {
+            "action": {
+              "external": true,
+              "target": "external",
+              "type": "url",
+              "url": "https://support.obsidian.net/"
+            },
+            "icon": "default#QUICK_LINK_ICON_SUPPORT",
+            "id": "support",
+            "label": "default#QUICK_LINK_SUPPORT",
+            "rank": 303
+          },
+          {
+            "action": {
+              "target": "shop",
+              "type": "upgrade",
+              "url": "nydus://client/shop/product/the-outer-worlds-2"
+            },
+            "color": "#6cdb00",
+            "icon": "default#QUICK_LINK_ICON_UPGRADE",
+            "id": "upgrade",
+            "label": "default#QUICK_LINK_UPGRADE_AVAILABLE",
+            "rank": 100
+          }
+        ],
+        "region_permission_flags": {
+          "default": "requires_account_visible",
+          "overrides": [
+            { "CN": "disabled_invisible", "override_type": "region" },
+            {
+              "BLR": "disabled_invisible",
+              "RUS": "disabled_invisible",
+              "override_type": "country"
+            }
+          ]
+        },
+        "starter_items": [
+          {
+            "action": {
+              "external": true,
+              "target": "external",
+              "type": "url",
+              "url": "https://www.obsidian.net/games/the-outer-worlds-2"
+            },
+            "id": "website",
+            "label": "default#STARTER_ITEM_WEBSITE",
+            "rank": 2,
+            "style": "link",
+            "type": "button"
+          }
+        ],
+        "starter_mode_when_offline": false,
+        "supported_platforms": ["win"],
+        "supported_regions": ["GLOBAL"],
+        "supports_language_selection": false,
+        "supports_starter_mode": false,
+        "tab_order": 17,
+        "title_id": 4280907,
+        "types": {
+          "artbook": {
+            "auto_favorite_on_grant": true,
+            "install_background": "arkansas#ARK_INSTALL_BACKGROUND",
+            "selector_display_name": "arkansas#ARK_ARTBOOK_NAME",
+            "type_name": "arkansas#ARK_ARTBOOK_NAME",
+            "uid": "ark_artbook"
+          },
+          "artbook_dev": {
+            "auto_favorite_on_grant": true,
+            "install_background": "arkansas#ARK_INSTALL_BACKGROUND",
+            "selector_display_name": "arkansas#ARK_ARTBOOK_DEV_NAME",
+            "type_name": "arkansas#ARK_ARTBOOK_DEV_NAME",
+            "uid": "ark_artbook_dev_1"
+          },
+          "artbook_rc": {
+            "auto_favorite_on_grant": true,
+            "install_background": "arkansas#ARK_INSTALL_BACKGROUND",
+            "selector_display_name": "arkansas#ARK_ARTBOOK_RC_NAME",
+            "type_name": "arkansas#ARK_ARTBOOK_RC_NAME",
+            "uid": "ark_artbook_rc"
+          },
+          "dev": {
+            "auto_favorite_on_grant": true,
+            "install_background": "arkansas#ARK_INSTALL_BACKGROUND",
+            "selector_display_name": "arkansas#ARK_DEV_NAME",
+            "type_name": "arkansas#ARK_DEV_NAME",
+            "uid": "ark_retail_dev_1"
+          },
+          "rc": {
+            "auto_favorite_on_grant": true,
+            "install_background": "arkansas#ARK_INSTALL_BACKGROUND",
+            "selector_display_name": "arkansas#ARK_RC_NAME",
+            "type_name": "arkansas#ARK_RC_NAME",
+            "uid": "ark_retail_rc"
+          },
+          "retail": {
+            "auto_favorite_on_grant": true,
+            "badges": [
+              {
+                "description": "default#BADGE_TEXT_INCLUDED_WITH_GAME_PASS",
+                "hidden": true,
+                "id": "game_pass",
+                "image": "default#LOGO_XBOX_GAME_PASS",
+                "label": "default#BADGE_TEXT_INCLUDED_WITH",
+                "rank": 1,
+                "tooltip": "default#GAME_PASS_DISCLAIMER"
+              }
+            ],
+            "supports_starter_mode": true,
+            "uid": "ark"
+          }
+        },
+        "uid": "ark",
+        "unsupported_platform_behavior": "disabled_install"
+      },
+      "id": "ARK"
+    }
+  ],
+  "program_configuration": {
+    "ARK": {
+      "run_each_rule": [
+        {
+          "actions": [
+            {
+              "add_product": { "product_id": { "id": "ARK", "type": "retail" } }
+            }
+          ],
+          "match": { "license_id": [1105059, 1105074] }
+        },
+        {
+          "actions": [
+            {
+              "add_product": {
+                "product_id": { "id": "ARK", "type": "artbook" }
+              }
+            }
+          ],
+          "match": { "license_id": [1105074] }
+        },
+        {
+          "actions": [
+            { "add_product": { "product_id": { "id": "ARK", "type": "dev" } } },
+            {
+              "add_product": {
+                "product_id": { "id": "ARK", "type": "artbook_dev" }
+              }
+            },
+            { "add_product": { "product_id": { "id": "ARK", "type": "rc" } } },
+            {
+              "add_product": {
+                "product_id": { "id": "ARK", "type": "artbook_rc" }
+              }
+            }
+          ],
+          "match": { "license_id": [1118152] }
+        }
+      ]
+    }
+  },
+  "strings": {
+    "deDE": {
+      "arkansas#ARK_ARTBOOK_NAME": "The Outer Worlds 2 – Artbook",
+      "arkansas#ARK_NAME": "The Outer Worlds 2"
+    },
+    "default": {
+      "arkansas#ARK_ARTBOOK_DEV_NAME": "TOW2 Artbook Dev",
+      "arkansas#ARK_ARTBOOK_NAME": "The Outer Worlds 2 Artbook",
+      "arkansas#ARK_ARTBOOK_RC_NAME": "TOW2 Artbook RC",
+      "arkansas#ARK_DEV_NAME": "TOW2 Dev",
+      "arkansas#ARK_NAME": "The Outer Worlds 2",
+      "arkansas#ARK_RC_NAME": "TOW2 RC"
+    },
+    "esES": {
+      "arkansas#ARK_ARTBOOK_NAME": "Libro de arte de The Outer Worlds 2",
+      "arkansas#ARK_NAME": "The Outer Worlds 2"
+    },
+    "esMX": {
+      "arkansas#ARK_ARTBOOK_NAME": "Libro de arte de The Outer Worlds 2",
+      "arkansas#ARK_NAME": "The Outer Worlds 2"
+    },
+    "frFR": {
+      "arkansas#ARK_ARTBOOK_NAME": "Artbook The Outer Worlds 2",
+      "arkansas#ARK_NAME": "The Outer Worlds 2"
+    },
+    "itIT": {
+      "arkansas#ARK_ARTBOOK_NAME": "Artbook di The Outer Worlds 2",
+      "arkansas#ARK_NAME": "The Outer Worlds 2"
+    },
+    "jaJP": {
+      "arkansas#ARK_ARTBOOK_NAME": "『The Outer Worlds 2』アートブック",
+      "arkansas#ARK_NAME": "The Outer Worlds 2"
+    },
+    "koKR": {
+      "arkansas#ARK_ARTBOOK_NAME": "The Outer Worlds 2 아트북",
+      "arkansas#ARK_NAME": "The Outer Worlds 2"
+    },
+    "plPL": {
+      "arkansas#ARK_ARTBOOK_NAME": "Artbook The Outer Worlds 2",
+      "arkansas#ARK_NAME": "The Outer Worlds 2"
+    },
+    "ptBR": {
+      "arkansas#ARK_ARTBOOK_NAME": "Livro de Arte Digital de The Outer Worlds 2",
+      "arkansas#ARK_NAME": "The Outer Worlds 2"
+    },
+    "ruRU": {
+      "arkansas#ARK_ARTBOOK_NAME": "The Outer Worlds 2 — артбук",
+      "arkansas#ARK_NAME": "The Outer Worlds 2"
+    },
+    "thTH": {
+      "arkansas#ARK_ARTBOOK_NAME": "หนังสือรวมงานภาพ The Outer Worlds 2",
+      "arkansas#ARK_NAME": "The Outer Worlds 2"
+    },
+    "zhCN": {
+      "arkansas#ARK_ARTBOOK_NAME": "《The Outer Worlds 2》艺术设定集",
+      "arkansas#ARK_NAME": "《The Outer Worlds 2》"
+    },
+    "zhTW": {
+      "arkansas#ARK_ARTBOOK_NAME": "《天外世界 2》美術圖冊",
+      "arkansas#ARK_NAME": "《天外世界 2》"
+    }
+  },
+  "version": 30
+}

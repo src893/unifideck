@@ -17,13 +17,14 @@ diff (changed, deleted) → translate changed keys via DeepL →
 write target files → update cache.
 
 Security: reads ``DEEPL_API_KEY`` from env, never from disk.
-On PR from a fork (no secret), falls back to "no-op unless source
-changed" — if source HAS changed and we have no key, exits 1
-so the maintainer knows to re-run after merging to main.
+With no key set (the manual-translation workflow, and fork PRs)
+this is a complete no-op: it reports what would have been
+translated and touches nothing on disk. Locale files are then
+maintained by hand — ``scripts/check_orphan_keys.py`` reports the
+completeness gaps.
 
 Exit codes:
-    0 — success (done or nothing to do)
-    1 — source changed but ``DEEPL_API_KEY`` not set
+    0 — success (done, nothing to do, or no API key)
     2 — DeepL API or I/O failure
     3 — config / argument / missing-file error
 
@@ -57,7 +58,6 @@ BATCH_SIZE = 25
 
 # Exit codes — mirrored in the module docstring.
 EXIT_OK = 0
-EXIT_NO_API_KEY_BUT_CHANGES = 1
 EXIT_IO_OR_API_ERROR = 2
 EXIT_CONFIG_ERROR = 3
 
@@ -386,29 +386,22 @@ def source_deepl_lang(source: Locale) -> str:
     return source.tag.split("-")[0].upper()
 
 
-def fail_if_changes_without_key(changed: dict[str, str]) -> None:
-    """Exit 1 if the source changed but no ``DEEPL_API_KEY`` is set.
+def warn_no_api_key(changed: dict[str, str], deleted: set[str]) -> None:
+    """Report the pending diff when no ``DEEPL_API_KEY`` is set.
 
-    Expected for PRs from forks — the maintainer will re-run the
-    workflow with API access after merging, and the generated
-    locale files will be committed in a follow-up commit.
+    Machine translation is opt-in: locale JSONs are maintained by
+    hand, so a missing key is the normal case, not an error. The
+    caller returns without touching disk — this only says what a
+    keyed run would have done, so the gap is visible in the log.
     """
-    if not changed:
-        # Only deletions — we can handle those without an API call.
-        print(
-            "[translate] no API key but only deletions pending "
-            "— proceeding",
-        )
-        return
     print(
-        "[translate] error: source locale has new or modified keys "
-        "but DEEPL_API_KEY is not set. This is expected for PRs "
-        "from forks — the maintainer will re-run the workflow "
-        "with API access after merging, and the generated locale "
-        "files will be committed in a follow-up commit.",
+        f"[translate] no DEEPL_API_KEY — skipping machine translation "
+        f"({len(changed)} keys would be translated, "
+        f"{len(deleted)} removed). Locale files are maintained "
+        f"manually; run scripts/check_orphan_keys.py for the "
+        f"completeness report.",
         file=sys.stderr,
     )
-    sys.exit(EXIT_NO_API_KEY_BUT_CHANGES)
 
 
 def apply_translations(
@@ -467,7 +460,12 @@ def main() -> int:
 
     api_key = os.environ.get("DEEPL_API_KEY", "").strip()
     if not api_key:
-        fail_if_changes_without_key(changed)
+        # Return BEFORE apply_translations: with no key it would
+        # still rewrite all 15 target files (re-sorted, deletions
+        # applied), churning hand-maintained translations for no
+        # benefit. No key means touch nothing.
+        warn_no_api_key(changed, deleted)
+        return EXIT_OK
 
     apply_translations(config, args, changed, deleted, api_key)
 

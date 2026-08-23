@@ -18,16 +18,22 @@ from typing import Any
 from unifideck.core import marker_sweep
 from unifideck.core.safe_delete import safe_rmtree
 from unifideck.rpc.mixins import cleanup_sweeps
+from unifideck.rpc.mixins.cleanup_finalize import _CleanupFinalizeMixin
 
 logger = logging.getLogger(__name__)
 
 
-class CleanupRPCMixin:
+class CleanupRPCMixin(_CleanupFinalizeMixin):
     """"Delete all Unifideck data" flow + its app_id collectors."""
 
     services: Any
     cache: Any
     registry: Any
+    # Consumed by ``_CleanupFinalizeMixin``; the concrete Plugin provides
+    # both (``SyncRPCMixin`` declares ``sync_service``, ``self.bus.emit`` is
+    # the established RPC-layer emit path).
+    sync_service: Any
+    bus: Any
 
     async def scan_orphaned_shortcuts(self) -> dict[str, Any]:
         """Detect orphaned Unifideck shortcuts for the frontend to sweep.
@@ -118,11 +124,12 @@ class CleanupRPCMixin:
         root = shortcuts.get("shortcuts") if isinstance(shortcuts, dict) else None
         if not isinstance(root, dict):
             return ids
+        launcher = getattr(shortcut_svc, "_launcher_path", "") or ""
         for entry in root.values():
             if not isinstance(entry, dict):
                 continue
             if not cleanup_sweeps.is_unifideck_owned(
-                entry, UNIFIDECK_TAG, is_unifideck_shortcut,
+                entry, UNIFIDECK_TAG, is_unifideck_shortcut, launcher,
             ):
                 continue
             app_id = entry.get("appid")
@@ -190,11 +197,12 @@ class CleanupRPCMixin:
         root = shortcuts.get("shortcuts") if isinstance(shortcuts, dict) else None
         if not isinstance(root, dict):
             return keep
+        launcher = getattr(shortcut_svc, "_launcher_path", "") or ""
         for entry in root.values():
             if not isinstance(entry, dict):
                 continue
             if cleanup_sweeps.is_unifideck_owned(
-                entry, UNIFIDECK_TAG, is_unifideck_shortcut,
+                entry, UNIFIDECK_TAG, is_unifideck_shortcut, launcher,
             ):
                 continue
             app_id = entry.get("appid")
@@ -340,6 +348,12 @@ class CleanupRPCMixin:
             else 0
         )
 
+        # Only now is the live process told: drop the in-memory library and
+        # size memo, prune the CLI install records the sweep above needed
+        # intact, and announce each cleared game so the UI stops showing
+        # games whose files are gone. Best-effort — never raises.
+        pruned = await self._finalize_wipe(delete_files)
+
         logger.info("[cleanup] complete")
         return {
             "deleted_games": len(deleted_app_ids),
@@ -347,7 +361,7 @@ class CleanupRPCMixin:
             "deleted_artwork_count": wiped["artwork"],
             "logged_out_count": wiped["logged_out"],
             "deleted_stray_files_count": wiped["stray"],
-            "deleted_residual_count": residual_total,
+            "deleted_residual_count": residual_total + pruned,
             "deleted_app_ids": deleted_app_ids,
         }
 

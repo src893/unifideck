@@ -33,13 +33,14 @@ the broadest possible answer because it guards a deletion.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
 from unifideck.stores.shared.installed_size import dir_size_bytes
 
+from . import agent_status, paths
 from . import library as library_mod
-from . import paths
 from .ownership import InstalledGame
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,12 @@ class BattlenetInstallProbe:
     def __init__(self, uid: str, prefix: Path) -> None:
         self._uid = uid
         self._prefix = Path(prefix)
+        # Cut-off for reading the Agent's logs. The prefix is an rsync clone
+        # of ``.template`` and rsync preserves mtimes, so it arrives carrying
+        # the previous runs' Agent logs with their original timestamps.
+        # Anything not written after this moment belongs to another run, in
+        # another prefix, possibly under another region tag.
+        self.started_at = time.time()
 
     def row(self) -> InstalledGame | None:
         """This game's install state, or ``None`` when the client hasn't written it."""
@@ -123,6 +130,21 @@ class BattlenetInstallProbe:
 
     def measure(self, install_dir: str) -> int:
         return dir_size_bytes(install_dir)
+
+    def status_message(self) -> str | None:
+        """Why this game is not downloading yet, in the Agent's own words.
+
+        Optional on the shared probe. See the note in
+        ``shared/wrapper_install/probe.py``. Battle.net can answer it because
+        its Agent runs one exclusive operation at a time and logs which one
+        holds the slot, so "queued behind the updater" is a fact here rather
+        than a guess. ``None`` whenever this game *is* the active operation,
+        which hands the caller back its own byte-count tick.
+        """
+        drive_c = paths.drive_c(self._prefix)
+        if drive_c is None:
+            return None
+        return agent_status.describe_wait(drive_c, self.started_at, self._uid)
 
     def is_complete(self, install_dir: str) -> bool | None:
         """``product.db``'s verdict for this uid — never a size heuristic.

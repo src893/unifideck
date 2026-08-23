@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from .wrapper_clients import CLIENT_IMAGES, kill_client, terminate
@@ -150,20 +151,99 @@ def wine_pids(prefix: str | Path) -> list[str]:
     return [pid for pid, _ in scan(prefix)]
 
 
+def _client_gave_up(prefix: str | Path, proc: object | None) -> bool:
+    """Whether the run we started has exited leaving nothing behind.
+
+    Both halves are required and neither is sufficient:
+
+    * the phase-A process having exited is normal on its own — umu execs
+      through several wrappers and the client is detached, so the outer
+      process can return while Wine keeps running;
+    * an empty prefix is normal on its own for the first few seconds, before
+      ``wineboot`` has started anything.
+
+    Together they mean the attempt is over. Measured in the field: a client
+    started, exited within ~20 s and left the prefix empty, and the wait sat
+    out its remaining 4½ minutes before reporting a timeout — which reads as
+    "still starting" and sent the diagnosis toward the wrong half of the
+    system entirely.
+    """
+    if proc is None or getattr(proc, "returncode", None) is None:
+        return False
+    return not wine_pids(prefix)
+
+
 async def wait_for_client_ready(
-    prefix: str | Path, deadline_seconds: float, poll: float = 2.0,
+    prefix: str | Path,
+    deadline_seconds: float,
+    poll: float = 2.0,
+    proc: object | None = None,
 ) -> bool:
-    """Poll until the client's renderer appears, or give up."""
+    """Poll until the client's renderer appears, or give up.
+
+    ``proc`` is phase A's process handle, when the caller has one. It turns
+    the give-up condition from "the deadline passed" into "the deadline
+    passed, or the client is provably gone" — see :func:`_client_gave_up`.
+    """
     timeout = deadline_seconds
     waited = 0.0
     while waited < timeout:
         if client_ready(prefix):
             logger.info("[battlenet] client ready after %.0fs", waited)
             return True
+        if _client_gave_up(prefix, proc):
+            logger.error(
+                "[battlenet] client exited after %.0fs (rc=%s) without starting — "
+                "no Wine processes left in %s; see the game log for its output",
+                waited, getattr(proc, "returncode", "?"), prefix,
+            )
+            return False
         await asyncio.sleep(poll)
         waited += poll
     logger.error("[battlenet] client not ready after %.0fs", timeout)
     return False
+
+
+class ReadinessLatch:
+    """Remembers whether this prefix's client was ever seen up.
+
+    :func:`client_ready` can only answer about *now*, and the question that
+    matters after a run ends is whether the window ever appeared. Sign-in asks
+    it to tell two identical-looking exits apart: a client that aborted during
+    renderer init (the ANGLE/gamescope crash a retry exists for) never becomes
+    ready, while a client the user opened and then closed did. Retrying the
+    second reopens a window they just dismissed.
+
+    Latching, never clearing. The client drops its renderer briefly during a
+    self-update, so a live reading taken at exit time would report a
+    user-closed client as one that never started.
+    """
+
+    def __init__(self) -> None:
+        self.seen = False
+
+    async def poll(self, prefix: str | Path, interval: float = 2.0) -> None:
+        """Watch until readiness is observed. Cancelled by the caller."""
+        while not self.seen:
+            if client_ready(prefix):
+                self.seen = True
+                return
+            await asyncio.sleep(interval)
+
+
+@contextlib.asynccontextmanager
+async def watch_readiness(
+    prefix: str | Path, interval: float = 2.0,
+) -> AsyncGenerator[ReadinessLatch]:
+    """Run a :class:`ReadinessLatch` for the duration of the block."""
+    latch = ReadinessLatch()
+    task = asyncio.create_task(latch.poll(prefix, interval))
+    try:
+        yield latch
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
 
 
 async def wait_for_game(

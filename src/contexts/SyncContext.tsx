@@ -21,8 +21,7 @@ import {
 import { useRPCMutation } from "../api/useRPC";
 import { rpcRoutes } from "../api/rpc-routes";
 import { syncStore } from "../stores/sync-store";
-import { uploadSteamOwnedTitles } from "../lib/steam-bridge/owned-library";
-import { uploadActiveSteamUser } from "../lib/steam-bridge/active-user";
+import { prepareForSync } from "../lib/steam-bridge/prepare-sync";
 import type { SyncProgress } from "../types/syncProgress";
 
 /** Sync context value. */
@@ -60,12 +59,11 @@ export const SyncProvider: FC<{ children: ReactNode }> = ({ children }) => {
 
   const startSync = useCallback(async () => {
     if (isSyncing) return;
-    syncStore.notifySyncStarted();
     // Confirm the live active Steam user + refresh the owned-library snapshot
     // before the backend fetch, so shortcuts land in the right userdata dir
-    // and Steam-linked Ubisoft games are hidden this run.
-    await uploadActiveSteamUser();
-    await uploadSteamOwnedTitles();
+    // and Steam-linked Ubisoft games are hidden this run. Shared with the
+    // post-login sync, which used to skip all of it.
+    await prepareForSync();
     void startMut
       .mutate()
       .catch((e) => console.warn("[SyncContext] startSync RPC failed", e));
@@ -73,9 +71,7 @@ export const SyncProvider: FC<{ children: ReactNode }> = ({ children }) => {
 
   const forceSync = useCallback(
     async (resyncArtwork?: boolean) => {
-      syncStore.notifySyncStarted();
-      await uploadActiveSteamUser();
-      await uploadSteamOwnedTitles();
+      await prepareForSync();
       void forceMut
         .mutate(resyncArtwork)
         .catch((e) => console.warn("[SyncContext] forceSync RPC failed", e));

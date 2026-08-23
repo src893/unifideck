@@ -19,12 +19,7 @@
     "artwork_concurrency": 4
   },
   "dedup": {
-    "tracked_stores": [
-      "epic",
-      "gog",
-      "amazon",
-      "ubisoft"
-    ],
+    "tracked_stores": ["epic", "gog", "amazon", "ubisoft"],
     "cross_store_enabled": false
   },
   "download": {
@@ -44,9 +39,7 @@
       "auth_url": "https://auth.gog.com/auth",
       "token_url": "https://auth.gog.com/token",
       "redirect_uri": "https://embed.gog.com/on_login_success?origin=client",
-      "allowed_redirect_uris": [
-        "https://embed.gog.com/on_login_success"
-      ],
+      "allowed_redirect_uris": ["https://embed.gog.com/on_login_success"],
       "base_url": "https://embed.gog.com",
       "api_gog_url": "https://api.gog.com",
       "token_file": "~/.config/unifideck/gog_token.json",
@@ -69,9 +62,7 @@
       "user_agent": "Unifideck/1.0"
     },
     "epic": {
-      "cli_binary_search_paths": [
-        "bin/legendary"
-      ],
+      "cli_binary_search_paths": ["bin/legendary"],
       "cli_version_flag": "--version",
       "user_file": "~/.config/legendary/user.json",
       "default_install_root": "~/Games/Epic",
@@ -79,18 +70,14 @@
         "https://legendary.epicgames.com/callback",
         "https://www.epicgames.com/id/api/redirect"
       ],
-      "auth_url_markers": [
-        "epicgames.com"
-      ],
+      "auth_url_markers": ["epicgames.com"],
       "info_timeout_seconds": 30,
       "list_updates_timeout_seconds": 60,
       "installed_cache_ttl_seconds": 30,
       "size_cache_ttl_seconds": 300
     },
     "amazon": {
-      "cli_binary_search_paths": [
-        "bin/nile"
-      ],
+      "cli_binary_search_paths": ["bin/nile"],
       "cli_version_flag": "--version",
       "nile_config_dir": "~/.config/nile",
       "user_file": "~/.config/nile/user.json",
@@ -217,13 +204,8 @@
         "custom_binding_ui",
         "steam_input_overlay"
       ],
-      "router_hook_patch": [
-        "library_view_patch",
-        "quickaccess_menu_icon"
-      ],
-      "steam_client_apps": [
-        "circuit_breaker_ui"
-      ]
+      "router_hook_patch": ["library_view_patch", "quickaccess_menu_icon"],
+      "steam_client_apps": ["circuit_breaker_ui"]
     },
     "probe_to_handlers": {
       "steam_client_apps": [
@@ -232,9 +214,7 @@
         "ShortcutService._on_sync_complete",
         "ShortcutService._on_game_uninstalled"
       ],
-      "steam_client_downloads": [
-        "ShortcutService._on_download_complete"
-      ]
+      "steam_client_downloads": ["ShortcutService._on_download_complete"]
     }
   },
   "proton": {

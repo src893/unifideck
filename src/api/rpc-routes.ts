@@ -73,6 +73,7 @@ export const rpcRoutes = {
   injectHideCss: "inject_hide_css",
   setLanguagePreference: "set_language_preference",
   getLanguagePreference: "get_language_preference",
+  getDeviceType: "get_device_type",
   setDefaultStorageLocation: "set_default_storage_location",
   setCustomInstallPath: "set_custom_install_path",
   listDirectory: "list_directory",

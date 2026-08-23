@@ -214,11 +214,24 @@ def _apply_battlenet_env(env: dict[str, str]) -> None:
     later on-device session and the client was healthy, so this is belt and
     braces rather than the gating fix it was believed to be.
 
+    ``DISABLE_GAMESCOPE_WSI=1`` — **only on a host that has already been
+    measured to need it**, which is why it comes from a recorded marker
+    rather than being set unconditionally. See
+    :mod:`~unifideck.launcher.proton.handlers.battlenet_wsi`: the client's
+    ANGLE renderer aborts inside gamescope's Vulkan WSI layer on some GPUs
+    and not others, and turning the layer off costs the XWayland-bypass
+    path (direct scanout, HDR) for the game too, since the game inherits
+    the client's environment. Applying it everywhere would charge that to
+    every working host to fix a minority of them.
+
     ``locationapi=d`` is **merged** into any existing WINEDLLOVERRIDES
     rather than replacing it — Proton appends its own long default list.
     """
+    from unifideck.launcher.proton.handlers import battlenet_wsi
+
     env["WINE_SIMULATE_WRITECOPY"] = "1"
     env["PROTON_USE_XALIA"] = "0"
+    battlenet_wsi.apply_if_recorded(env)
     existing = env.get("WINEDLLOVERRIDES", "")
     if "locationapi" not in existing:
         env["WINEDLLOVERRIDES"] = (
@@ -245,6 +258,56 @@ def _apply_rockstar_dll_overrides(env: dict[str, str], umu_id: str | None) -> No
         "[launcher.proton.core] Rockstar-EGS (%s): STORE=egs, "
         "WINEDLLOVERRIDES+=%s", umu_id, ROCKSTAR_WINEDLLOVERRIDES,
     )
+
+
+def _apply_icu_dll_overrides(env: dict[str, str], game_id: str | None) -> None:
+    """Add the native-ICU WINEDLLOVERRIDES to ``env`` in place.
+
+    Merges with any existing overrides rather than clobbering (Proton
+    appends its own long default list, and battlenet may already have put
+    ``locationapi=d`` here); a user's explicit ``ctx.env_overrides`` still
+    wins, since that is applied afterwards.
+    """
+    from unifideck.launcher.proton.fixes.game_fixes import (
+        ICU_NATIVE_WINEDLLOVERRIDES,
+    )
+    existing = env.get("WINEDLLOVERRIDES", "")
+    if "icuuc" in existing:
+        return
+    env["WINEDLLOVERRIDES"] = (
+        f"{existing};{ICU_NATIVE_WINEDLLOVERRIDES}"
+        if existing else ICU_NATIVE_WINEDLLOVERRIDES
+    )
+    logger.info(
+        "[launcher.proton.core] native-ICU title (%s): WINEDLLOVERRIDES+=%s",
+        game_id, ICU_NATIVE_WINEDLLOVERRIDES,
+    )
+
+
+def _apply_per_title_env(
+    env: dict[str, str],
+    ctx: LaunchContext,
+    *,
+    umu_id: str | None,
+    exe_name: str,
+    rockstar_egs: bool,
+) -> None:
+    """Layer the per-title / per-store env quirks onto ``env`` in place.
+
+    Split out of :func:`_build_umu_env` to keep it under the line cap. Every
+    branch here is gated so a title that matches nothing is left byte-for-byte
+    unchanged, and all of them run BEFORE ``ctx.env_overrides`` so a user's
+    explicit value still wins.
+    """
+    from unifideck.launcher.proton.fixes.game_fixes import needs_native_icu
+    if rockstar_egs:
+        _apply_rockstar_dll_overrides(env, umu_id)
+    if ctx.store == "battlenet":
+        _apply_battlenet_env(env)
+    # Store-independent: keyed off the exe/id, not ctx.store, because the
+    # same title ships the same bundled ICU on GOG and Epic alike.
+    if needs_native_icu(ctx.game_id, umu_id, exe_name):
+        _apply_icu_dll_overrides(env, ctx.game_id)
 
 
 def _build_umu_env(
@@ -315,10 +378,9 @@ def _build_umu_env(
     # one on atomic hosts.
     env.pop("STEAM_COMPAT_CLIENT_INSTALL_PATH", None)
     env["PROTON_VERB"] = "waitforexitandrun"
-    if rockstar_egs:
-        _apply_rockstar_dll_overrides(env, umu_id)
-    if ctx.store == "battlenet":
-        _apply_battlenet_env(env)
+    _apply_per_title_env(
+        env, ctx, umu_id=umu_id, exe_name=exe_name, rockstar_egs=rockstar_egs,
+    )
     env.update(ctx.env_overrides)
     logger.info(
         "[launcher.proton.core] plan ready: store=%s umu_store=%s "

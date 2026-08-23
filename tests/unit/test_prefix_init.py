@@ -61,10 +61,42 @@ def _make_root_prefix(root: Path, *, proton_marker: str | None = None) -> None:
         ("Proton 9.0 (Beta)", "proton9"),
         ("Proton 10.0", "proton10"),
         ("something-weird", "other"),
+        # Steam's compatibility-tool DISPLAY names, as the user picks them in
+        # Properties > Compatibility. These used to collapse to "other".
+        ("Proton-GE Latest", "ge-proton"),
+        ("GE-Proton11-5-x86_64", "ge-proton"),
+        ("Proton - Experimental", "experimental"),
+        ("Proton-CachyOS Latest", "cachyos"),
+        ("cachyos-11.0-20260703-slr", "cachyos"),
+        ("CachyOS-11.0-100", "cachyos"),
     ],
 )
 def test_proton_family(tool, family):
     assert pi._proton_family(tool) == family
+
+
+# Regression: a GOG prefix was reset six times in two days because the
+# display-name and directory-name spellings of GE-Proton were read as
+# different families, while CachyOS and GE both collapsed to "other" and
+# read as the same one. A false family change WIPES the prefix, so both
+# directions matter.
+@pytest.mark.parametrize(
+    ("previous", "current", "same_family"),
+    [
+        # Same family — must NOT reset (these three were the spurious wipes).
+        ("Proton-GE Latest", "GE-Proton11-3", True),
+        ("GE-Proton11-3", "Proton-GE Latest", True),
+        ("GE-Proton11-3", "GE-Proton11-5", True),
+        # Genuinely different families — must reset. The first was missed.
+        ("Proton-CachyOS Latest", "Proton-GE Latest", False),
+        ("GE-Proton11-5", "Proton-CachyOS Latest", False),
+        ("proton_experimental", "GE-Proton11-3", False),
+    ],
+)
+def test_proton_family_transitions_from_the_field(previous, current, same_family):
+    assert (
+        pi._proton_family(previous) == pi._proton_family(current)
+    ) is same_family
 
 
 # ── _handle_proton_change ─────────────────────────────────────────

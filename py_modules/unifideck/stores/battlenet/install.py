@@ -37,6 +37,12 @@ from typing import TYPE_CHECKING, Any
 
 from unifideck.core.types.results import InstallResult
 from unifideck.launcher.proton.handlers.wrapper_clients import kill_client
+from unifideck.launcher.wrapper_client_cache import capture_client_cache
+from unifideck.launcher.wrapper_session_specs import spec_for
+from unifideck.stores.shared.prefix_forensics import (
+    preserve_vendor_logs,
+    salvage_path,
+)
 from unifideck.stores.shared.prefix_placement import (
     BeforeRemove as CaptureSession,
 )
@@ -46,9 +52,10 @@ from unifideck.stores.shared.prefix_placement import (
     resolve_prefix_target,
 )
 from unifideck.stores.shared.wrapper_install import watch_manual_install
+from unifideck.stores.shared.wrapper_install.watch import install_alive
 
+from . import agent_status, paths
 from . import library as library_mod
-from . import paths
 from .install_watch import BattlenetInstallProbe
 from .ownership import read_catalog
 
@@ -164,12 +171,7 @@ class BattlenetInstaller:
                 "family_unknown",
             )
         if not self._prefixes.auth_ready():
-            return _failed(
-                game_id,
-                "Sign in to Battle.net first — the game prefix inherits "
-                "your signed-in session",
-                "not_signed_in",
-            )
+            return _failed(game_id, *self._auth_not_ready_reason())
         target = await self._place_prefix(game_id, install_path)
         prefix = await self._prefixes.create_game_prefix(game_id, target)
         if prefix is None:
@@ -233,26 +235,37 @@ class BattlenetInstaller:
             kill_client(
                 STORE_ID, prepared.prefix, timeout=_CANCEL_STOP_TIMEOUT_S,
             )
-            await self._abandon(game_id, prepared)
+            await self._abandon(game_id, prepared, probe.started_at)
             raise
         if not install_dir:
-            await self._abandon(game_id, prepared)
+            await self._abandon(game_id, prepared, probe.started_at)
             return _failed(
                 game_id,
                 "The install was never finished in Battle.net",
                 "no_install_detected",
             )
-        return self._record(game_id, prepared, probe, install_dir)
+        result = self._record(game_id, prepared, probe, install_dir)
+        # This prefix survives, but the template is what the *next* install
+        # clones, so a successful install is the cheapest moment there is to
+        # top it up. Costs one marker read when there is nothing new.
+        await self._capture_client_cache(prepared.prefix, probe.started_at)
+        return result
 
-    async def _abandon(self, game_id: str, prepared: PreparedInstall) -> None:
+    async def _abandon(
+        self, game_id: str, prepared: PreparedInstall, since: float,
+    ) -> None:
         """Reclaim a prefix we created that never received a game.
 
         Skipped for an update: that prefix predates this operation and holds
         the user's existing install, so it was never ours to reclaim.
+
+        ``since`` is when this attempt's client started, and it is what lets
+        the cleanup tell the Agent's work in *this* prefix from the inherited
+        logs the clone arrived with.
         """
         if prepared.is_update:
             return
-        await self.cleanup_abandoned(game_id, prepared.prefix)
+        await self.cleanup_abandoned(game_id, prepared.prefix, since=since)
 
     def _record(
         self,
@@ -350,13 +363,32 @@ class BattlenetInstaller:
         )
         return True
 
-    async def cleanup_abandoned(self, game_id: str, prefix: Path) -> None:
+    async def cleanup_abandoned(
+        self, game_id: str, prefix: Path, *, since: float | None = None,
+    ) -> None:
         """Drop the prefix left by an install that produced no game.
 
         An interrupted clone to removable media would otherwise leave a
         partial ~1.2 GB tree squatting on the disk the user picked, with the
         id map still pointing at it.
+
+        The client's own logs come out first. They live inside the prefix,
+        so this deletion is the only thing standing between a failed install
+        and the sole first-hand record of why it failed — and it has already
+        cost one field investigation. See ``shared/prefix_forensics``.
+
+        So does the Agent's content store, for the same reason and at a much
+        higher price: a user who cancels an install that looked stuck is
+        usually cancelling the Agent's own self-update, and without this the
+        next attempt re-downloads it from zero and looks equally stuck.
+
+        ``since`` is when this attempt's client started. ``None`` means no
+        client ran under this prefix (the clone itself failed), so there is
+        nothing of ours in it to keep and the capture is skipped outright.
         """
+        await self._salvage_client_logs(game_id, prefix)
+        if since is not None:
+            await self._capture_client_cache(prefix, since)
         deleted = await cleanup_abandoned_prefix(
             prefix,
             recorded=self._id_map.resolve_prefix(game_id),
@@ -366,6 +398,133 @@ class BattlenetInstaller:
         )
         if deleted:
             self._id_map.clear_prefix(game_id)
+
+    def _auth_not_ready_reason(self) -> tuple[str, str]:
+        """``(message, error_code)`` naming *why* the auth prefix is unusable.
+
+        Two different situations reach the same gate and want different
+        words. Telling a user to "sign in first" when they signed in
+        successfully an hour ago is how a real report came back a second
+        time: their session was fine, the client the session lives beside
+        was half-installed. Signing in again does repair it — the sign-in
+        shortcut reinstalls the client — but only if the message says so.
+        """
+        auth = self._prefixes.auth_prefix
+        if paths.client_exe(auth) is not None:
+            return (
+                (
+                    "Battle.net's client files are incomplete. Sign in to "
+                    "Battle.net again and let the window finish opening. That "
+                    "reinstalls the client."
+                ),
+                "client_incomplete",
+            )
+        return (
+            (
+                "Sign in to Battle.net first — the game prefix inherits "
+                "your signed-in session"
+            ),
+            "not_signed_in",
+        )
+
+    async def _salvage_client_logs(self, game_id: str, prefix: Path) -> None:
+        """Copy Battle.net's own logs out before the prefix goes.
+
+        Best-effort by construction — :func:`preserve_vendor_logs` swallows
+        everything and returns a count. A salvage must never be the reason a
+        prefix the user is waiting on does not get reclaimed.
+        """
+        await preserve_vendor_logs(
+            STORE_ID, Path(prefix), salvage_path(STORE_ID, game_id),
+        )
+
+    async def _capture_client_cache(self, prefix: Path, since: float) -> None:
+        """Carry the Agent's content store back up the prefix chain.
+
+        Never raises.
+
+        **Into the auth prefix, not only the template.** Capturing only into
+        ``.template`` looked right and does not survive: the template is by
+        definition an rsync clone of ``.bnet-auth``, and ``ensure_template``
+        rebuilds it from there whenever it is not a usable auth-derived
+        snapshot, which a sign-out makes true. Measured end to end on
+        2026-08-22: a capture landed at 21:14, the user signed out at 22:22,
+        the template was re-derived at 22:45, and the next install paid the
+        agent update over again with the store back at its 6.9 MB bootstrap
+        size. Writing to auth as well means a rebuild inherits the cache
+        instead of discarding it.
+
+        The template still gets its own copy, because it is what the *next*
+        install clones and a rebuild is not guaranteed to happen in between.
+
+        What makes one copy of that store interchangeable with another is the
+        Agent's TACT tag query, not its size. A completed update *shrinks*
+        the store, because the Agent compacts away whatever the new tags do
+        not select. So the tag string travels with the copy as its generation.
+
+        **An unfinished store is still worth keeping**, and this is the case
+        that matters. Users cancel exactly when the wait looks broken, which is
+        mid-agent-update; capturing only finished downloads would keep nothing
+        on the one path that actually repeats. It is marked partial so a later
+        complete capture still supersedes it.
+
+        What is *not* negotiable is that nothing is writing the store as it is
+        copied. A torn content store in the template is inherited by every
+        prefix made afterwards, which is the one outcome worse than a slow
+        install. Note that "the client is closed" is the wrong test for that:
+        completion deliberately leaves the window open, so requiring a dead
+        client would silently disable the capture on the success path, which
+        is the cheapest one. :meth:`_store_is_quiescent` asks the real
+        question instead.
+        """
+        drive_c = paths.drive_c(Path(prefix))
+        spec = spec_for(STORE_ID)
+        if drive_c is None or spec is None:
+            return
+        generation = agent_status.update_generation(drive_c, since)
+        if not generation:
+            return
+        if not await self._store_is_quiescent(prefix, drive_c, since):
+            return
+        complete = agent_status.self_update_finished(drive_c, since)
+        destinations = [self._prefixes.template_prefix]
+        # The auth prefix is the durable one, but it is also the prefix the
+        # sign-in client runs in, so it only accepts a copy while that client
+        # is down. Skipping it costs the next template rebuild, not the
+        # capture: the template copy below still happens either way.
+        if not self._prefixes.auth_is_busy():
+            destinations.append(self._prefixes.auth_prefix)
+        for destination in destinations:
+            await asyncio.to_thread(
+                capture_client_cache,
+                spec,
+                Path(prefix),
+                destination,
+                generation,
+                complete=complete,
+            )
+
+    async def _store_is_quiescent(
+        self, prefix: Path, drive_c: Path, since: float,
+    ) -> bool:
+        """Whether nothing is currently writing the Agent's content store.
+
+        Two ways to be sure, one per exit path:
+
+        * **No client.** The cancel path kills it first, so the store is
+          whatever the interrupted download left: the ordinary resumable
+          state, and nothing can change it now.
+        * **No active operation.** The success path leaves the window open,
+          but the Agent runs one exclusive operation at a time and says when
+          it holds none. An idle Agent is not writing.
+
+        A state we cannot read is not quiescent: refusing to capture costs one
+        slow install, capturing mid-write costs every install after it.
+        """
+        if not await asyncio.to_thread(install_alive, STORE_ID, Path(prefix)):
+            return True
+        state = agent_status.read_state(drive_c, since)
+        return state is not None and state.active is None
 
     async def _holds_game(self, prefix: Path) -> bool:
         return await asyncio.to_thread(holds_ready_install, Path(prefix))

@@ -27,6 +27,7 @@ Two layers, matching legendary's own precedence
 """
 from __future__ import annotations
 
+import json
 import types
 from pathlib import Path
 from typing import Any
@@ -199,3 +200,60 @@ def test_rewriting_replaces_rather_than_duplicates() -> None:
     text = _config_text()
     assert text.count("language = ") == 1
     assert "language = de" in text
+
+
+# --------------------------------------------------------------------------
+# The language the user PICKED has to reach the game
+#
+# _resolve_epic_language built ConfigManager with no ``user_path``, so the
+# merged view never included the user's own config file: it saw only
+# defaults/config.json and resolved from the machine instead. On a Steam Deck
+# — LANG=en_US.UTF-8, always — that meant English for everyone.
+#
+# The tests above stub ConfigManager out entirely, so they cannot see this.
+# These drive the real one with the machine pinned to a language the user did
+# NOT choose, so a fallback can never masquerade as success.
+# --------------------------------------------------------------------------
+def _real_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_locale: str | None,
+) -> Path:
+    """Lay down defaults + user config; return the plugin dir. Pins LANG."""
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir(parents=True)
+    repo_defaults = Path(__file__).resolve().parents[2] / "defaults/config.json"
+    # The Decky CLI layout: defaults/config.json flattened to the install
+    # root. This is what a plugin installed from a CLI-built zip looks
+    # like, and the hardcoded nested path found nothing in it.
+    (plugin_dir / "config.json").write_text(
+        repo_defaults.read_text(encoding="utf-8"), encoding="utf-8",
+    )
+    user_cfg = tmp_path / "user_config.json"
+    if user_locale is not None:
+        user_cfg.write_text(
+            json.dumps({"ui": {"locale": user_locale}}), encoding="utf-8",
+        )
+    monkeypatch.setenv("UNIFIDECK_USER_CONFIG", str(user_cfg))
+    monkeypatch.setenv("HOME", str(tmp_path))       # no registry.vdf here
+    # Pin what the resolver sees as the machine's locale. Patching
+    # ``getlocale`` rather than ``LANG``: Python reads the process locale
+    # set at startup, so setting the env mid-test proves nothing.
+    import unifideck.utils.locale as locale_module
+    monkeypatch.setattr(
+        locale_module._locale, "getlocale", lambda: ("en_US", "UTF-8"),
+    )
+    monkeypatch.delenv("EPIC_LANG", raising=False)
+    return plugin_dir
+
+
+def test_honours_the_language_picked_in_the_unifideck_ui(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _real_config(tmp_path, monkeypatch, "es-ES")
+    assert _resolve_epic_language(_plan(plugin_dir)) == "es"
+
+
+def test_falls_back_to_the_machine_when_the_user_picked_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _real_config(tmp_path, monkeypatch, None)
+    assert _resolve_epic_language(_plan(plugin_dir)) == "en"

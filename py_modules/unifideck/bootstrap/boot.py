@@ -130,30 +130,13 @@ async def _boot_layer2_core(plugin: Any, decky_runtime_dir: str) -> Any:
 def _resolve_defaults_path(decky_plugin_dir: str) -> str:
     """Locate the bundled config.json across Decky build layouts.
 
-    Two install layouts are valid in production:
-
-    1. ``<plugin>/defaults/config.json`` — local builds via
-       ``build-plugin.sh build_local`` and dev syncs that preserve
-       the source directory layout.
-    2. ``<plugin>/config.json`` — Decky CLI builds (``decky plugin
-       build``). Decky CLI 0.0.8+ has a convention where the contents
-       of ``defaults/`` get flattened to the install root on first
-       install (so users can edit them, with the file preserved
-       across plugin updates).
-
-    We pick whichever exists, preferring the unflattened layout when
-    both are present (more explicit). Returns the unflattened path
-    even when neither exists — ConfigManager handles "missing
-    defaults" by logging a warning and entering degraded mode, and
-    paths.py has fallback defaults so boot still completes.
+    Delegates to :func:`config.defaults_path.resolve_defaults_config_path`
+    so the plugin backend and the launcher process resolve it identically —
+    the launcher used to hardcode the unflattened layout and therefore found
+    no defaults on a Decky CLI build.
     """
-    nested = str(Path(decky_plugin_dir) / "defaults" / "config.json")
-    if Path(nested).is_file():
-        return nested
-    flattened = str(Path(decky_plugin_dir) / "config.json")
-    if Path(flattened).is_file():
-        return flattened
-    return nested
+    from unifideck.config.defaults_path import resolve_defaults_config_path
+    return resolve_defaults_config_path(decky_plugin_dir)
 
 
 async def _boot_config_and_validate(

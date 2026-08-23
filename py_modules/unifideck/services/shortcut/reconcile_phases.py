@@ -11,19 +11,15 @@ reclaims orphaned entries by AppID from the persistent registry.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .games_map import UNIFIDECK_TAG, GameMapEntry, generate_app_id
-from .launch_options import is_unifideck_shortcut
 from .orphan_scan import _is_launcher_exe
 from .reconcile_helpers import (
     build_launch_index,
     dedup_shortcuts,
     log_restart_banner,
-    touch_marker,
 )
 
 if TYPE_CHECKING:
@@ -160,14 +156,18 @@ class _ReconcilePhasesMixin:
 
         from .registry import load_registry, save_registry
 
-        registry = load_registry()
+        # Explicit path: ``registry``'s default is expanded at import
+        # time, so omitting it reads and writes a fixed location
+        # regardless of how this service was configured.
+        registry_path = self._registry_path
+        registry = load_registry(registry_path)
         counts: dict[str, int] = self._apply_reconcile_phases(
             games, registry, force=force, valid_stores=valid_stores,
         )
         if counts["added"] or counts["removed"] or counts["reclaimed"]:
             await self._save_all()
         if counts["added"] or counts["reclaimed"]:
-            save_registry(registry)
+            save_registry(registry, registry_path)
         self._log_reconcile_result(games, counts)
         return counts
 
@@ -196,8 +196,8 @@ class _ReconcilePhasesMixin:
         # Dedup AFTER add/drop so reclaimed orphans count toward the
         # winners' scores. Steam occasionally creates duplicate VDF
         # entries with the same launch-options (in-memory desync,
-        # crash recovery).
-        removed += dedup_shortcuts(shortcuts_dict)
+        # crash recovery). Scoped to our own entries by ``launcher``.
+        removed += dedup_shortcuts(shortcuts_dict, launcher)
         return {
             "added": added, "removed": removed,
             "kept": kept, "reclaimed": reclaimed,
@@ -227,45 +227,15 @@ class _ReconcilePhasesMixin:
             )
 
     async def _reset_lastplaytime_once(self: Any) -> None:
-        """One-time migration: clear bogus ``LastPlayTime`` stamps.
+        """One-time ``LastPlayTime`` migration — see :mod:`lastplaytime_reset`.
 
-        An earlier build wrote ``LastPlayTime = now`` into every new
-        shortcut, so Steam's ``GetPlaytime`` reported the same fake
-        "last played" date for games that were never launched. We zero
-        those values once (guarded by a marker in the data dir) so
-        never-played games read as "Never Played"; Steam re-stamps real
-        plays on launch and ``_update_existing_shortcut`` preserves them
-        afterwards. Only Unifideck-owned entries are touched — the
-        user's own shortcuts keep their real play history.
+        Body lives in its own module: this file sits against the 550-LOC
+        volumetry cap, and a one-shot migration is the natural thing to
+        lift out of the steady-state reconcile path.
         """
-        marker = Path(self._games_map_path).parent / "lastplaytime_reset.done"
-        if await asyncio.to_thread(marker.exists):
-            return
+        from .lastplaytime_reset import reset_lastplaytime_once
 
-        self._shortcuts = self._ensure_shortcuts_root(self._shortcuts)
-        shortcuts_dict = self._shortcuts["shortcuts"]
-        cleared = 0
-        for entry in shortcuts_dict.values():
-            if not isinstance(entry, dict) or not entry.get("LastPlayTime"):
-                continue
-            launch = entry.get("LaunchOptions", "")
-            owned = isinstance(launch, str) and is_unifideck_shortcut(launch)
-            if not owned:
-                tags = entry.get("tags") or {}
-                owned = isinstance(tags, dict) and UNIFIDECK_TAG in tags.values()
-            if owned:
-                entry["LastPlayTime"] = 0
-                cleared += 1
-
-        if cleared:
-            await self._save_all()
-        # Mark done even when nothing changed, so we don't rescan every
-        # sync; a failed marker write just retries next sync (idempotent).
-        await asyncio.to_thread(touch_marker, marker)
-        logger.info(
-            "[ShortcutService] LastPlayTime reset migration: cleared %d shortcut(s)",
-            cleared,
-        )
+        await reset_lastplaytime_once(self)
 
     # ── Phase helpers ──────────────────────────────────────
 
@@ -312,8 +282,8 @@ class _ReconcilePhasesMixin:
         # iterating games — one O(N) pass across shortcuts, then
         # O(1) per-game. Mirrors staging's approach at
         # shortcuts_manager.py line 1708-1713.
-        launch_to_key = build_launch_index(shortcuts_dict)
         launcher = getattr(self, "_launcher_path", "") or ""
+        launch_to_key = build_launch_index(shortcuts_dict, launcher)
         added = kept = reclaimed = 0
         for game in games:
             outcome = self._sync_one_game(
@@ -365,7 +335,9 @@ class _ReconcilePhasesMixin:
             return "kept"
 
         # ── Match by AppID (fallback — LaunchOptions missing).
-        existing_key = self._find_existing_shortcut_key(shortcuts_dict, app_id)
+        existing_key = self._find_existing_shortcut_key(
+            shortcuts_dict, app_id, launcher,
+        )
         if existing_key is not None:
             if force:
                 self._update_existing_shortcut(
@@ -412,7 +384,10 @@ class _ReconcilePhasesMixin:
         registered = get_registered_appid(registry, key)
         if registered is None:
             return False
-        ord_key = self._find_existing_shortcut_key(shortcuts_dict, registered)
+        launcher = getattr(self, "_launcher_path", "") or ""
+        ord_key = self._find_existing_shortcut_key(
+            shortcuts_dict, registered, launcher,
+        )
         if ord_key is None:
             return False
         self._reclaim_orphan(shortcuts_dict[ord_key], game, registered)

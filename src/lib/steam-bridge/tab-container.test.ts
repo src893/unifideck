@@ -19,6 +19,11 @@ vi.mock("../library-filters", () => ({
   runFilters: () => true,
   setStoreCountSink: () => {},
 }));
+// tab-container reads the device class to title the compat tab, and
+// the real module pulls in @decky/api. Device-aware titling has its
+// own tests in tab-title-device.test.ts; this file is about the
+// count-path crash guard.
+vi.mock("../device-type", () => ({ getDeviceType: () => "deck" }));
 
 import { UnifideckTabContainer, type SteamAppFilter } from "./tab-container";
 import type { SteamAppOverview } from "../../types/steam";

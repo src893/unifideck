@@ -72,8 +72,8 @@ def test_build_storage_locations_labels_mmcblk_source_as_sd_card(
     locations = storage_mod._build_storage_locations(None)
     by_id = {loc["id"]: loc for loc in locations}
 
-    assert by_id[mounts.mount_id(sd.mount_point)]["label"] == "SD Card"
-    assert by_id[mounts.mount_id(usb.mount_point)]["label"] == "External Drive (USBDRIVE)"
+    assert by_id[mounts.mount_id(sd)]["label"] == "SD Card"
+    assert by_id[mounts.mount_id(usb)]["label"] == "External Drive (USBDRIVE)"
 
 
 def test_build_storage_locations_includes_custom_path_last(
@@ -114,6 +114,54 @@ def test_remap_legacy_default_sdcard_falls_back_to_internal_when_no_external() -
 def test_remap_legacy_default_unknown_value_falls_back_to_internal() -> None:
     locations = [{"id": "internal"}, {"id": "ext:SDCARD"}]
     assert storage_mod._remap_legacy_default("ext:GONE", locations) == "internal"
+
+
+def test_remap_legacy_default_upgrades_a_name_based_id_to_the_uuid_id() -> None:
+    """The user's chosen drive must stay chosen across the id change.
+
+    Configs written before ids moved to the filesystem UUID hold
+    ``ext:<name>``, which matches no current id. Re-deriving the old
+    id from each location's ``device_path`` recognises it.
+    """
+    locations = [
+        {"id": "internal", "device_path": "/home/deck/Games"},
+        {
+            "id": "ext:b430ddca-dece-4f36-b839-ab71e1b4efed",
+            "device_path": "/run/media/deck/External SSD",
+        },
+    ]
+    assert storage_mod._remap_legacy_default("ext:External_SSD", locations) == (
+        "ext:b430ddca-dece-4f36-b839-ab71e1b4efed"
+    )
+
+
+def test_remap_legacy_default_ignores_a_name_id_for_an_absent_drive() -> None:
+    locations = [
+        {"id": "internal", "device_path": "/home/deck/Games"},
+        {"id": "ext:other-uuid", "device_path": "/run/media/deck/LX1TB"},
+    ]
+    assert storage_mod._remap_legacy_default("ext:External_SSD", locations) == "internal"
+
+
+def test_external_label_strips_invisible_characters_from_the_drive_name() -> None:
+    """A label is attacker-ish input in the sense that we render it raw."""
+    m = _mount("/run/media/deck/GAMES" + chr(0x202E) + "exe")
+    assert storage_mod._external_label(m) == "External Drive (GAMESexe)"
+
+
+def test_storage_location_rows_carry_their_device_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    usb = _mount("/run/media/deck/External SSD", uuid="b430ddca")
+    monkeypatch.setattr(mounts, "scan_mounts", lambda *args, **kw: [usb])
+    monkeypatch.setattr(mounts, "ensure_games_subdir", lambda mp, uid, gid: f"{mp}/Games")
+
+    locations = storage_mod._build_storage_locations(None)
+    external = next(loc for loc in locations if loc["id"] != "internal")
+
+    assert external["id"] == "ext:b430ddca"
+    assert external["device_path"] == "/run/media/deck/External SSD"
+    assert external["path"] == "/run/media/deck/External SSD/Games"
 
 
 def test_set_default_storage_location_accepts_ext_id() -> None:

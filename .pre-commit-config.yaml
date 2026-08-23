@@ -52,6 +52,40 @@ repos:
     hooks:
       - id: gitleaks
 
+  # i18n gates. Local hooks (no external repo) because they are
+  # repo-specific scripts. `pass_filenames: false` — each script
+  # scans the whole tree itself, comparing every locale against
+  # en-US, so a per-file invocation would be meaningless.
+  - repo: local
+    hooks:
+      - id: check-orphan-keys
+        name: i18n — keys used in code exist in every locale
+        entry: python3 scripts/check_orphan_keys.py
+        language: system
+        pass_filenames: false
+        files: ^(src/.*\.(ts|tsx)|src/i18n/locales/.*\.json)$
+
+      - id: check-untranslated
+        name: i18n — translations are translated, placeholders match
+        entry: python3 scripts/check_untranslated.py
+        language: system
+        pass_filenames: false
+        files: ^(src/i18n/locales/.*\.json|scripts/i18n_allowlist\.json)$
+
+      - id: check-hardcoded-strings
+        name: i18n — no hardcoded user-facing strings in toasts
+        entry: python3 scripts/check_hardcoded_strings.py
+        language: system
+        pass_filenames: false
+        files: ^(src/.*\.(ts|tsx)|py_modules/unifideck/.*\.py)$
+
+      - id: check-config-keys
+        name: config — every unguarded config.get key is registered
+        entry: python3 scripts/check_config_keys.py
+        language: system
+        pass_filenames: false
+        files: ^py_modules/unifideck/.*\.py$
+
 ci:
   autofix_commit_msg: "style: pre-commit autofixes"
   autoupdate_schedule: monthly

@@ -267,6 +267,19 @@ export const StoragePathPicker: FC<Props> = ({ startPath, onConfirm }) => {
         </DialogButton>
       </Focusable>
 
+      {/* The device list always carries internal storage, so "loaded,
+          but nothing except internal" is exactly an undetected drive —
+          worth saying out loud rather than showing a one-entry
+          dropdown. An empty list means the RPC itself failed, which is
+          a different problem and gets no such claim. */}
+      {!devicesLoading &&
+        devices.length > 0 &&
+        !devices.some((d) => d.id !== "internal") && (
+          <div style={{ fontSize: 12, color: "#8f98a0" }}>
+            {t("storageSettings.noExternalDrives")}
+          </div>
+        )}
+
       {/* Current path breadcrumb */}
       <div
         style={{

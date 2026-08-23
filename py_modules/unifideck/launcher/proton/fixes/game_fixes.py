@@ -104,6 +104,59 @@ ROCKSTAR_PLAY_EXES: dict[str, str] = {
 # vulkan-1=n,b = native-then-builtin: lets the game's own vulkan-1.dll
 # load first. Heroic's documented RDR2/GTA5 fix for the launch failure.
 ROCKSTAR_WINEDLLOVERRIDES = "vulkan-1=n,b"
+# ── Titles that ship their own ICU and must not get Wine's stub ────
+# icuuc=n,b = native-then-builtin, the same shape as the Rockstar
+# override above: the game's own icuuc.dll loads first, and Wine's
+# builtin is still there to fall back on.
+#
+# Cyberpunk 2077 bundles ICU **65** as ``icuuc.dll`` beside the game exe.
+# From a user log bundle (2026-08-12, SteamOS desktop, Unifideck 0.7.3),
+# every launch that reached the game died on the same line, via BOTH
+# ``REDprelauncher.exe`` and a direct ``Cyberpunk2077.exe`` retry:
+#
+#   wine: Call from 00006FFFFFF5C8C0 to unimplemented function
+#         icuuc.dll.u_setMemoryFunctions_65, aborting
+#
+# The game got as far as vkd3d device creation and Fossilize, then
+# aborted — so the window opens and stays blank. Wine loaded its BUILTIN
+# ``icuuc.dll`` ahead of the game's, and that builtin is a stub.
+#
+# Which Proton builds carry that stub, checked on-device:
+#
+#   GE-Proton9-26   builtin icuuc.dll: no    bundled ICU: none
+#   GE-Proton10-10  builtin icuuc.dll: no    bundled ICU: icuuc68.dll
+#   GE-Proton10-34  builtin icuuc.dll: no    bundled ICU: icuuc68.dll
+#   GE-Proton11-1   builtin icuuc.dll: no    bundled ICU: icuuc68.dll
+#   GE-Proton11-3   builtin icuuc.dll: YES   bundled ICU: icuuc68.dll
+#
+# GE-Proton11-3 is the first build to ship it, which is why this surfaced
+# now. Proton's own bundled ICU is **68**, so it cannot serve an ICU-65
+# symbol either — bumping Proton is not the fix, loading the game's own
+# copy is. protonfixes cannot cover this: there is no gamefix for this
+# title in any store's directory, and nothing in the protonfixes tree
+# touches ICU at all.
+ICU_NATIVE_WINEDLLOVERRIDES = "icuuc=n,b"
+# PRIMARY tier = the exe name, for the same reason it is primary for
+# Rockstar: it survives re-releases and is identical on every store.
+# ``REDprelauncher.exe`` also fronts The Witcher 3 next-gen, which is
+# harmless — native-then-builtin is inert for a game that ships no
+# icuuc.dll of its own, so the worst case is a no-op override.
+ICU_NATIVE_EXE_NAMES: frozenset[str] = frozenset({
+    "cyberpunk2077.exe",
+    "redprelauncher.exe",
+})
+# SECONDARY tier = per-store ids, for the case where we are handed a
+# launch exe that matches nothing above. Both rows confirmed in the
+# ``umu-database.csv`` that ships inside every Proton build:
+#   Cyberpunk 2077,gog,1423049311,umu-1091500
+#   Cyberpunk 2077,egs,Ginger,umu-1091500
+ICU_NATIVE_GAME_IDS: frozenset[str] = frozenset({
+    "1423049311",  # Cyberpunk 2077 (GOG product id)
+    "Ginger",      # Cyberpunk 2077 (Epic codename)
+})
+ICU_NATIVE_UMU_IDS: frozenset[str] = frozenset({
+    "umu-1091500",  # Cyberpunk 2077
+})
 # THIRD, most-durable match tier: the Rockstar Play-launcher exe name itself
 # (lowercased). Rockstar/Take-Two re-release these titles under a NEW Epic
 # app id every edition — legacy "Grand Theft Auto V"
@@ -254,6 +307,34 @@ def resolve_rockstar_play_exe(
     if exe_name and exe_name.lower() in ROCKSTAR_PLAY_EXE_NAMES:
         return exe_name
     return rockstar_play_exe_in_dir(install_dir)
+
+
+def needs_native_icu(
+    game_id: str | None,
+    umu_id: str | None = None,
+    exe_name: str | None = None,
+) -> bool:
+    """True for titles that must load their OWN icuuc.dll, not Wine's stub.
+
+    Three tiers, most durable first: ``exe_name`` (identical on every store
+    and across editions); ``game_id`` (the per-store id, which differs
+    between GOG and Epic); and ``umu_id`` as an optional secondary match,
+    only ever populated when ``bin/umu_lookup.py`` is present — it is not
+    bundled in the Decky build, so treat it as a bonus rather than a tier
+    that fires (same caveat as :func:`is_rockstar_egs`).
+
+    Any one match returns True; matching none returns False, so a launch
+    that is not on the list is left byte-for-byte unchanged. Pure — no
+    filesystem probing, since this runs on every launch.
+
+    See :data:`ICU_NATIVE_WINEDLLOVERRIDES` for the abort this prevents and
+    the per-Proton-build evidence.
+    """
+    if exe_name and exe_name.lower() in ICU_NATIVE_EXE_NAMES:
+        return True
+    if game_id and game_id in ICU_NATIVE_GAME_IDS:
+        return True
+    return bool(umu_id and umu_id in ICU_NATIVE_UMU_IDS)
 
 
 _UMU_DATABASE_URL_FORMATS = [

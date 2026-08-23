@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from unifideck.rpc import RpcError
-from unifideck.utils import mounts
+from unifideck.utils import mount_naming, mounts
 
 logger = logging.getLogger(__name__)
 
@@ -178,29 +178,54 @@ def _external_label(m: mounts.MountInfo) -> str:
     """SD-card-looking source device → "SD Card"; else the mount's name."""
     if mounts.is_sdcard_source(m.device):
         return "SD Card"
-    name = Path(m.mount_point).name or m.mount_point
-    return f"External Drive ({name})"
+    return f"External Drive ({mount_naming.display_name(m.mount_point)})"
+
+
+def _remap_name_derived_id(
+    default: str, locations: list[dict[str, Any]],
+) -> str | None:
+    """Match an ``ext:<name>`` id by re-deriving it from ``device_path``."""
+    for loc in locations:
+        device_path = loc.get("device_path")
+        if not isinstance(device_path, str) or not device_path:
+            continue
+        if mount_naming.legacy_mount_id(device_path) == default:
+            return str(loc["id"])
+    return None
+
+
+def _first_external_id(locations: list[dict[str, Any]]) -> str | None:
+    """First external location, standing in for the old shared ``sdcard`` id."""
+    for loc in locations:
+        loc_id = loc["id"]
+        if isinstance(loc_id, str) and loc_id.startswith("ext:"):
+            return loc_id
+    return None
 
 
 def _remap_legacy_default(default: str, locations: list[dict[str, Any]]) -> str:
-    """Remap a persisted legacy ``"sdcard"`` default to a real id.
+    """Remap a persisted default saved under an older id scheme.
 
-    Configs saved before this fix may have
-    ``download.default_location == "sdcard"`` from when every
-    external mount shared that one hardcoded id. Once externals get
-    unique ``ext:<name>`` ids, that stale value would match nothing
-    in *locations* and silently fail to pre-select any row in the
-    picker.
+    Two generations of stale values can be sitting in a user's config,
+    and either would match nothing in *locations* and silently
+    pre-select no row in the picker:
+
+    * ``"sdcard"`` — from when every external mount shared one
+      hardcoded id.
+    * ``"ext:<name>"`` — derived from the mount-point basename, before
+      ids moved to the filesystem UUID. Recognised by re-deriving the
+      old id from each location's ``device_path``, so the user's chosen
+      drive stays chosen across the upgrade.
     """
     ids = {loc["id"] for loc in locations}
     if default in ids:
         return default
-    if default == "sdcard":
-        for loc in locations:
-            loc_id = loc["id"]
-            if isinstance(loc_id, str) and loc_id.startswith("ext:"):
-                return loc_id
-    return "internal"
+    remapped: str | None = None
+    if default.startswith("ext:"):
+        remapped = _remap_name_derived_id(default, locations)
+    elif default == "sdcard":
+        remapped = _first_external_id(locations)
+    return remapped or "internal"
 
 
 # ─── Module-level helpers ─────────────────────────────────────
@@ -209,11 +234,18 @@ def _remap_legacy_default(default: str, locations: list[dict[str, Any]]) -> str:
 def _location_entry(
     loc_id: str, label: str, path: str, free_basis: str,
 ) -> dict[str, Any]:
-    """Build a storage-location dict; free space is measured on *free_basis*."""
+    """Build a storage-location dict; free space is measured on *free_basis*.
+
+    ``device_path`` is the root this location lives on (the mount point
+    for an external, the directory itself otherwise). It is what lets
+    ``_remap_legacy_default`` recognise an id saved under the old
+    name-derived scheme without a second mount scan.
+    """
     return {
         "id": loc_id,
         "label": label,
         "path": path,
+        "device_path": free_basis,
         "available": True,
         "free_space_gb": _free_gb(free_basis),
     }
